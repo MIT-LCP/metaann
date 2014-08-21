@@ -27,6 +27,7 @@ _______________________________________________________________________________
 */
 
 #include <gtk/gtk.h>
+#include "gtk-compat.h"
 
 /* Default screen resolution.  All known X servers seem to know something about
    the screen size, even if what they know isn't true.  Just in case, these
@@ -129,5 +130,3 @@ void set_ampl_scale(int i);
 void set_record_and_annotator(const char *rec, const char *ann);
 void set_display_start_time(WFDB_Time t);
 
-COMMON char *wave_view_record;
-COMMON char *wave_view_annotator;

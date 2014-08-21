@@ -34,14 +34,16 @@ static GdkGC *bg_fill;
 
 static int reload_signals, reload_annotations, recalibrate;
 
-/* Handle exposures in the signal window. */
-static void repaint(GtkWidget *w, GdkEventExpose *ev, gpointer data)
+void set_record_and_annotator(const char *rec, const char *ann)
 {
+    char *r, *a;
     int i;
 
+    r = g_strdup(rec ? rec : "");
+    a = g_strdup(ann ? ann : "");
+
     /* If a new record has been selected, re-initialize. */
-    if (reload_signals ||
-	g_strcmp0(record, wave_view_record)) {
+    if (reload_signals || strncmp(record, r, RNLMAX)) {
 	wfdbquit();
 
 	/* Reclaim memory previously allocated for baseline labels, if any. */
@@ -50,17 +52,20 @@ static void repaint(GtkWidget *w, GdkEventExpose *ev, gpointer data)
 		free(blabel[i]);
 		blabel[i] = NULL;
 	    }
-
-	if (!record_init(wave_view_record)) return;
+	
+	if (!record_init(r)) {
+	    g_free(r);
+	    g_free(a);
+	    return;
+	}
 	annotator[0] = '\0';	/* force re-initialization of annotator if
 				   record was changed */
 	savebackup = 1;
     }
 
     /* If a new annotator has been selected, re-initialize. */
-    if (reload_annotations ||
-	g_strcmp0(annotator, wave_view_annotator)) {
-	g_strlcpy(annotator, wave_view_annotator, ANLMAX);
+    if (reload_annotations || strncmp(annotator, a, ANLMAX)) {
+	g_strlcpy(annotator, a, ANLMAX);
 	if (annotator[0]) {
 	    af.name = annotator; af.stat = WFDB_READ;
 	    nann = 1;
@@ -71,13 +76,23 @@ static void repaint(GtkWidget *w, GdkEventExpose *ev, gpointer data)
 	savebackup = 1;
     }
 
+    reload_signals = reload_annotations = 0;
+    g_free(r);
+    g_free(a);
+}
+
+/* Handle exposures in the signal window. */
+static void repaint(GtkWidget *w, GdkEventExpose *ev, gpointer data)
+{
+    set_record_and_annotator(record, annotator);
+
     if (recalibrate) {
 	if (vscale)
 	    vscale[0] = 0.0;
 	calibrate();
     }
 
-    reload_signals = reload_annotations = recalibrate = 0;
+    recalibrate = 0;
 
     restore_grid();
     do_disp();
@@ -113,7 +128,7 @@ static void resize(GtkWidget *w, GtkAllocation *alloc, gpointer data)
     canvas_height_mv = canvas_height / dmmy(10);
     
     /* Recalibrate based on selected scales, clear the display list cache. */
-    if (*record && GTK_WIDGET_REALIZED(w)) {
+    if (*record && gtk_widget_get_realized(w)) {
 	set_baselines();
 	alloc_sigdata(nsig > 2 ? nsig : 2);
 

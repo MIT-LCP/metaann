@@ -18,7 +18,7 @@ WFDB_LIBS   = `$(WFDB_CONFIG) --libs`
 ## Compilation options
 
 cflags1 = $(CFLAGS) $(CPPFLAGS) -DMETAANN_VERSION=\"$(PACKAGE_VERSION)\" $(DEFS) \
-	  $(GTK_CFLAGS) $(CURL_CFLAGS) $(WFDB_CFLAGS)
+	  $(GTK_CFLAGS) $(CURL_CFLAGS) $(WFDB_CFLAGS) -Wimplicit
 
 cflags2 = $(cflags1) -W -Wall -Wformat=2 -Wwrite-strings -Wmissing-prototypes
 
@@ -29,12 +29,12 @@ objs = metaann.o conf.o url.o annot.o grid.o init.o modepan.o sig.o wave_widget.
 ## Package information
 
 PACKAGE_TARNAME = metaann
-PACKAGE_VERSION = 0.1
+PACKAGE_VERSION = 0.2
 SRCPACKAGE = $(PACKAGE_TARNAME)-$(PACKAGE_VERSION)
 W32PACKAGE = $(PACKAGE_TARNAME)-w32
 
 srcfiles = Makefile *.c *.h
-datafiles = *.ui metaann.conf default.conf
+datafiles = COPYING *.ui metaann.conf default.conf
 
 ## W32 binary package information
 

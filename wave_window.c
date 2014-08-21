@@ -39,16 +39,6 @@ static void grid_mode_changed(GtkComboBox *combo,
 			      G_GNUC_UNUSED gpointer data)
 {
     set_grid_mode(gtk_combo_box_get_active(combo));
-    gtk_widget_queue_draw(wave_view);
-}
-
-void set_record_and_annotator(const char *rec, const char *ann)
-{
-    g_free(wave_view_record);
-    g_free(wave_view_annotator);
-    wave_view_record = g_strdup(rec ? rec : "");
-    wave_view_annotator = g_strdup(ann ? ann : "");
-    gtk_widget_queue_draw(wave_view);
 }
 
 GtkWidget *create_wave_window()
@@ -102,8 +92,6 @@ GtkWidget *create_wave_window()
     wv = create_wave_view();
     gtk_widget_set_size_request(wv, 200, 200);
     gtk_box_pack_start(GTK_BOX(vbox), wv, TRUE, TRUE, 0);
-
-    set_record_and_annotator("", "");
 
     gtk_combo_box_set_active(GTK_COMBO_BOX(combo), grid_mode);
     g_signal_connect(combo, "changed", G_CALLBACK(grid_mode_changed), NULL);

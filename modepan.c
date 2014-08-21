@@ -44,6 +44,7 @@ void set_grid_mode(int mode)
       case 6: ghflag = visible = 2; gvflag = 3; break;
     }
     coarse_grid_mode = fine_grid_mode = grid_mode;
+    gtk_widget_queue_draw(wave_view);
 }
 
 void set_sig_mode(int mode)
@@ -53,6 +54,7 @@ void set_sig_mode(int mode)
     if (mode != sig_mode || sig_mode == 2) {
 	sig_mode = mode;
 	set_baselines();
+	gtk_widget_queue_draw(wave_view);
     }
 }
 
@@ -60,12 +62,18 @@ void set_ann_mode(int mode)
 {
     g_return_if_fail(mode >= 0 && mode <= 2);
 
-    ann_mode = mode;
+    if (ann_mode != mode) {
+	ann_mode = mode;
+	gtk_widget_queue_draw(wave_view);
+    }
 }
 
 void set_overlap(int mode)
 {
-    overlap = mode;
+    if (overlap != mode) {
+	overlap = mode;
+	gtk_widget_queue_draw(wave_view);
+    }
 }
 
 void set_time_mode(int mode)
@@ -76,6 +84,7 @@ void set_time_mode(int mode)
     if (nsig > 0 && time_mode == 1)
 	(void)wtimstr(0L);	/* check if absolute times are available --
 				   if not, time_mode is reset to 0 */
+    gtk_widget_queue_draw(wave_view);
 }
 
 void set_time_scale(int i)
@@ -156,6 +165,7 @@ void set_time_scale(int i)
     coarse_tsa_index = fine_tsa_index = tsa_index;
 
     wave_view_force_recalibrate();
+    gtk_widget_queue_draw(wave_view);
 }
 
 void set_ampl_scale(int i)
@@ -169,6 +179,7 @@ void set_ampl_scale(int i)
     mmpermv = vsa[i];
     canvas_height_mv = canvas_height/dmmy(vsa[vsa_index = i]);
     wave_view_force_recalibrate();
+    gtk_widget_queue_draw(wave_view);
 }
 
 /* Time-to-string conversion functions.  These functions use those in the

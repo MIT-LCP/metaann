@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <interface>
-  <requires lib="gtk+" version="2.12"/>
+  <!-- interface-requires gtk+ 2.12 -->
   <!-- interface-naming-policy project-wide -->
   <object class="GtkVBox" id="options_box">
     <property name="visible">True</property>
@@ -42,6 +42,7 @@
         </child>
       </object>
       <packing>
+        <property name="expand">False</property>
         <property name="position">0</property>
       </packing>
     </child>
@@ -97,6 +98,7 @@
         </child>
       </object>
       <packing>
+        <property name="expand">False</property>
         <property name="position">2</property>
       </packing>
     </child>
@@ -140,6 +142,7 @@
         </child>
       </object>
       <packing>
+        <property name="expand">False</property>
         <property name="position">3</property>
       </packing>
     </child>
@@ -184,6 +187,7 @@
         </child>
       </object>
       <packing>
+        <property name="expand">False</property>
         <property name="position">4</property>
       </packing>
     </child>
@@ -203,7 +207,7 @@
                   <object class="GtkLabel" id="label14">
                     <property name="visible">True</property>
                     <property name="xalign">0.4699999988079071</property>
-                    <property name="label" translatable="yes">&lt;b&gt;Data _conversion error&lt;/b&gt;
+                    <property name="label" translatable="yes">&lt;b&gt;_Data conversion error&lt;/b&gt;
 &lt;small&gt;Beat labels missing or not aligned&lt;/small&gt;</property>
                     <property name="use_markup">True</property>
                     <property name="use_underline">True</property>
@@ -229,6 +233,7 @@
         </child>
       </object>
       <packing>
+        <property name="expand">False</property>
         <property name="position">5</property>
       </packing>
     </child>
@@ -275,6 +280,7 @@
         </child>
       </object>
       <packing>
+        <property name="expand">False</property>
         <property name="position">6</property>
       </packing>
     </child>
@@ -312,6 +318,7 @@
         </child>
       </object>
       <packing>
+        <property name="expand">False</property>
         <property name="position">7</property>
       </packing>
     </child>
@@ -322,6 +329,7 @@
         <child>
           <object class="GtkLabel" id="label13">
             <property name="visible">True</property>
+            <property name="yalign">0</property>
             <property name="label" translatable="yes">_Comments:</property>
             <property name="use_underline">True</property>
             <property name="mnemonic_widget">comment_entry</property>
@@ -333,10 +341,20 @@
           </packing>
         </child>
         <child>
-          <object class="GtkEntry" id="comment_entry">
+          <object class="GtkScrolledWindow" id="scrolledwindow1">
             <property name="visible">True</property>
             <property name="can_focus">True</property>
-            <property name="invisible_char">&#x25CF;</property>
+            <property name="hscrollbar_policy">automatic</property>
+            <property name="vscrollbar_policy">automatic</property>
+            <property name="shadow_type">in</property>
+            <child>
+              <object class="GtkTextView" id="comment_entry">
+                <property name="visible">True</property>
+                <property name="can_focus">True</property>
+                <property name="wrap_mode">word-char</property>
+                <property name="accepts_tab">False</property>
+              </object>
+            </child>
           </object>
           <packing>
             <property name="position">1</property>
@@ -348,29 +366,27 @@
       </packing>
     </child>
   </object>
-
   <object class="GtkSizeGroup" id="sizegroup1">
     <property name="mode">vertical</property>
     <widgets>
-      <widget name="good_alarm_button"/>
-      <widget name="bad_noisy_alarm_button"/>
-      <widget name="bad_ampl_alarm_button"/>
-      <widget name="bad_beats_alarm_button"/>
-      <widget name="bad_conv_alarm_button"/>
-      <widget name="bad_other_alarm_button"/>
       <widget name="uncertain_alarm_button"/>
+      <widget name="bad_other_alarm_button"/>
+      <widget name="bad_conv_alarm_button"/>
+      <widget name="bad_beats_alarm_button"/>
+      <widget name="bad_ampl_alarm_button"/>
+      <widget name="bad_noisy_alarm_button"/>
+      <widget name="good_alarm_button"/>
     </widgets>
   </object>
-
   <object class="GtkSizeGroup" id="sizegroup2">
     <widgets>
-      <widget name="good_alarm_info_label"/>
-      <widget name="bad_noisy_alarm_info_label"/>
-      <widget name="bad_ampl_alarm_info_label"/>
-      <widget name="bad_beats_alarm_info_label"/>
-      <widget name="bad_conv_alarm_info_label"/>
-      <widget name="bad_other_alarm_info_label"/>
       <widget name="uncertain_alarm_info_label"/>
+      <widget name="bad_other_alarm_info_label"/>
+      <widget name="bad_conv_alarm_info_label"/>
+      <widget name="bad_beats_alarm_info_label"/>
+      <widget name="bad_ampl_alarm_info_label"/>
+      <widget name="bad_noisy_alarm_info_label"/>
+      <widget name="good_alarm_info_label"/>
     </widgets>
   </object>
 </interface>

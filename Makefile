@@ -29,7 +29,7 @@ objs = metaann.o conf.o url.o annot.o grid.o init.o modepan.o sig.o wave_widget.
 ## Package information
 
 PACKAGE_TARNAME = metaann
-PACKAGE_VERSION = 0.2
+PACKAGE_VERSION = 0.3
 SRCPACKAGE = $(PACKAGE_TARNAME)-$(PACKAGE_VERSION)
 W32PACKAGE = $(PACKAGE_TARNAME)-w32
 
@@ -43,6 +43,8 @@ sysdlls = msvcrt.dll kernel32.dll gdi32.dll imm32.dll ole32.dll \
           shell32.dll user32.dll advapi32.dll ws2_32.dll comctl32.dll \
           comdlg32.dll winspool.drv msimg32.dll gdiplus.dll dnsapi.dll \
 	  shlwapi.dll usp10.dll crypt32.dll
+
+CACERT = /etc/ssl/certs/ca-certificates.crt
 
 #w32extrafiles = etc/fonts \
 #	         lib/gtk-2.0/2.10.0/engines \
@@ -98,6 +100,7 @@ dist-binary: all
 	set -e; export LC_ALL=C; \
 	cd $(W32PACKAGE); \
 	ln -s ../metaann.exe; \
+	ln -s $(CACERT) curl-ca-bundle.crt; \
 	for f in $(w32extrafiles); do \
 	  if ! [ -e $(DLLPREFIX)/$$f ]; then \
 	    echo; \

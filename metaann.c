@@ -1,3 +1,22 @@
+/*
+ * Metaann
+ *
+ * Copyright (C) 2014 Benjamin Moody
+ *
+ * This program is free software: you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation, either version 2 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -5,6 +24,7 @@
 #include <wfdb/wfdblib.h>
 #include <gtk/gtk.h>
 #include <gdk/gdkkeysyms.h>
+#include <glib/gstdio.h>
 #include <unistd.h>
 #include <errno.h>
 
@@ -13,72 +33,27 @@
 #include "conf.h"
 #include "url.h"
 
-enum {
-  GOOD,
-  BAD_NOISY,
-  BAD_AMPL,
-  BAD_BEATS,
-  BAD_CONV,
-  BAD_OTHER,
-  UNCERTAIN,
-  N_STATUS_BUTTONS
-};
-
-static const struct {
-  const char *ui_name;
-  const char *status;
-  const char *substatus;
-} button_status_values[] = {
-  { "good",        "good", NULL },
-  { "bad_noisy",   "bad", "noisy" },
-  { "bad_ampl",    "bad", "ampl" },
-  { "bad_beats",   "bad", "beats" },
-  { "bad_conv",    "bad", "conv" },
-  { "bad_other",   "bad", NULL },
-  { "uncertain",   "uncertain", NULL }};
+/* Input database parameters */
 
 #define TARGET_ANY 999999
 
-static char *database_path;
-static char *record_list_url;
-static char *database_annotator;
-static char *target_aux;
-static int target_anntyp = TARGET_ANY;
-static int target_subtyp = TARGET_ANY;
-static int target_num = TARGET_ANY;
-static int target_chan = TARGET_ANY;
+static char *database_path;	 /* WFDB path */
+static char *database_annotator; /* Name of annotator */
+static char *database_calfile;	 /* Name of calibration file */
+static char *record_list_url;	 /* File containing list of records */
+static int target_anntyp = TARGET_ANY; /* ANNTYP of interest */
+static int target_subtyp = TARGET_ANY; /* SUBTYP of interest */
+static int target_num = TARGET_ANY;    /* NUM of interest */
+static int target_chan = TARGET_ANY;   /* CHAN of interest */
+static char *target_aux;	       /* (Prefix of) AUX string of interest */
 
-static GtkWidget *window, *record_label, *record_num_label,
-  *ann_label, *ann_num_label, *message_label,
-  *time_scale_combo, *ampl_scale_combo,
-  *prev_button, *next_button, *recenter_button,
-  *prevcomp_button, *nextcomp_button,
-  *alarm_button[N_STATUS_BUTTONS], *comment_entry,
-  *alarm_info_label[N_STATUS_BUTTONS];
+static int cache_enabled;
 
-static GtkWidget *user_name_entry, *password_entry;
-
-static GtkWidget *wave_window;
-
-static int button_update;
+/* Cached input data */
 
 struct alarm_info {
   char *message;
   WFDB_Time time;
-};
-
-struct result_info {
-  char *record;
-  WFDB_Time time;
-  char *status;
-  char *substatus;
-  char *comment;
-};
-
-struct results_list {
-  char *post_url;
-  int n_results;
-  struct result_info *results;
 };
 
 struct alarm_pos {
@@ -94,15 +69,6 @@ struct record_info {
 static int n_records;
 static struct record_info *records;
 
-static struct results_list my_results;
-
-static int compare_mode;
-static int n_alarms_to_compare;
-static struct alarm_pos *alarms_to_compare; 
-
-static int n_reviewers;
-static struct results_list **reviewer_results;
-
 static int cur_record_index;
 static char *cur_record;
 
@@ -111,7 +77,59 @@ static struct alarm_info *cur_record_alarms;
 static int cur_alarm_index;
 static struct alarm_info *cur_alarm;
 
+static int compare_mode;
+static int n_alarms_to_compare;
+static struct alarm_pos *alarms_to_compare; 
+
+/* List of possible status codes (user responses) */
+
+struct response_info {
+  char *ui_name;
+  char *status;
+  char *substatus;
+  int comment_required;
+  int always_adjudicate;
+  int never_adjudicate;
+};
+
+static int n_responses;
+static struct response_info *responses;
+
+/* List of user annotations */
+
+struct result_info {
+  char *record;
+  WFDB_Time time;
+  char *status;
+  char *substatus;
+  char *comment;
+};
+
+struct results_list {
+  char *post_url;
+  int n_results;
+  struct result_info *results;
+};
+
+static struct results_list my_results;
+
+static int n_reviewers;
+static struct results_list **reviewer_results;
+
 static const struct result_info *pending_result;
+
+/* User interface objects */
+
+static GtkWidget *window, *record_label, *record_num_label,
+  *ann_label, *ann_num_label, *message_label,
+  *time_scale_combo, *ampl_scale_combo,
+  *prev_button, *next_button, *recenter_button,
+  *prevcomp_button, *nextcomp_button,
+  **alarm_button, *comment_entry,
+  **alarm_info_label;
+static GtkWidget *user_name_dialog, *user_name_entry, *password_entry;
+static GtkWidget *wave_window;
+static int button_update;
 
 /**** Utilities ****/
 
@@ -131,12 +149,18 @@ static void G_GNUC_PRINTF(3, 4)
 show_message(GtkMessageType type, const char *primary,
 	     const char *secondary, ...)
 {
+  GtkWindow *parent;
   GtkWidget *dlg;
   char *s;
   va_list ap;
 
+  if (window && gtk_widget_get_visible(window))
+    parent = GTK_WINDOW(window);
+  else
+    parent = GTK_WINDOW(user_name_dialog);
+
   dlg = gtk_message_dialog_new
-      (GTK_WINDOW(window), GTK_DIALOG_MODAL, type,
+      (parent, GTK_DIALOG_MODAL, type,
        GTK_BUTTONS_OK, "%s", primary);
 
   if (secondary) {
@@ -176,11 +200,56 @@ static char * editable_get_text(GtkWidget *w)
   if (GTK_IS_TEXT_VIEW(w)) {
     buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(w));
     gtk_text_buffer_get_bounds(buffer, &start, &end);
-    return gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+    return gtk_text_buffer_get_slice(buffer, &start, &end, TRUE);
   }
   else {
     return g_strdup(gtk_entry_get_text(GTK_ENTRY(w)));
   }
+}
+
+/**** Status values ****/
+
+static void init_statcodes()
+{
+  char prop[100];
+  struct response_info *si;
+  int i;
+
+  n_responses = defaults_get_integer("", "Responses.NumResponses", 0);
+  responses = g_new0(struct response_info, n_responses);
+
+  alarm_button = g_new0(GtkWidget *, n_responses);
+  alarm_info_label = g_new0(GtkWidget *, n_responses);
+
+  for (i = 0; i < n_responses; i++) {
+    si = &responses[i];
+    g_snprintf(prop, sizeof(prop), "Responses.Response%d", i);
+    si->ui_name = g_strdup(defaults_get_string("", prop, NULL));
+    g_snprintf(prop, sizeof(prop), "Responses.Response%d.Status", i);
+    si->status = g_strdup(defaults_get_string("", prop, ""));
+    g_snprintf(prop, sizeof(prop), "Responses.Response%d.Substatus", i);
+    si->substatus = g_strdup(defaults_get_string("", prop, ""));
+    g_snprintf(prop, sizeof(prop), "Responses.Response%d.CommentRequired", i);
+    si->comment_required = defaults_get_boolean("", prop, 0);
+    g_snprintf(prop, sizeof(prop), "Responses.Response%d.AlwaysAdjudicate", i);
+    si->always_adjudicate = defaults_get_boolean("", prop, 0);
+    g_snprintf(prop, sizeof(prop), "Responses.Response%d.NeverAdjudicate", i);
+    si->never_adjudicate = defaults_get_boolean("", prop, 0);
+  }
+}
+
+static int result_to_statcode(const struct result_info *r)
+{
+  int i;
+
+  for (i = 0; i < n_responses; i++) {
+    if (!g_strcmp0(r->status, responses[i].status)
+        && (!g_strcmp0(r->substatus, responses[i].substatus))) {
+      return i;
+    }
+  }
+
+  return -1;
 }
 
 /**** Results list ****/
@@ -262,6 +331,8 @@ static void read_results_list(struct results_list *rl,
       t = strtol(strs[1], NULL, 10);
       status = strs[2];
 
+      /* FIXME: remove support for old deprecated formats */
+
       if (!strs[3]) {
         substatus = "";
         comment = "";
@@ -339,12 +410,12 @@ static void save_result(struct results_list *rl,
   g_string_append(postdata, "&comment=");
   g_string_append_uri_escaped(postdata, r->comment, NULL, FALSE);
 
-  g_printerr("%s\n", postdata->str);
+  g_printerr("POST: %s\n", postdata->str);
 
   response = url_post(rl->post_url, postdata->str,
 		      gtk_entry_get_text(GTK_ENTRY(user_name_entry)),
 		      gtk_entry_get_text(GTK_ENTRY(password_entry)),
-		      &err);
+		      NULL, &err);
   g_string_free(postdata, TRUE);
   g_free(response);
   if (err) {
@@ -404,20 +475,32 @@ static int n_results_for_record(struct results_list *rl,
 static int results_conflict(const struct result_info *r1,
                             const struct result_info *r2)
 {
+  int s1, s2;
+
   g_return_val_if_fail(r1 != NULL, 0);
   g_return_val_if_fail(r2 != NULL, 0);
 
   if (!r1->status || !r1->status[0] || !r2->status || !r2->status[0])
     return 0;
 
-  if (g_strcmp0(r1->status, r2->status)
-      /*|| g_strcmp0(r1->substatus, r2->substatus)*/
-      || !g_strcmp0(r1->status, "uncertain"))
+  if (g_strcmp0(r1->status, r2->status))
     return 1;
 
-  if (!g_strcmp0(r1->status, "bad")
-      && g_strcmp0(r1->substatus, r2->substatus)
-      && (!g_strcmp0(r1->substatus, "conv") || !g_strcmp0(r2->substatus, "conv")))
+  s1 = result_to_statcode(r1);
+  s2 = result_to_statcode(r2);
+
+  if (s1 < 0 || s2 < 0)
+    /* unknown status code! */
+    return 1;
+
+  if (responses[s1].never_adjudicate)
+    return 0;
+  if (responses[s2].never_adjudicate)
+    return 0;
+
+  if (responses[s1].always_adjudicate)
+    return 1;
+  if (responses[s2].always_adjudicate)
     return 1;
 
   return 0;
@@ -550,6 +633,24 @@ static void read_reviewer_results()
 
 /**** Reading records/alarms ****/
 
+static void delete_recursive(const char *dname)
+{
+  GDir *dir;
+  const char *name;
+  char *fullname;
+
+  if (!g_file_test(dname, G_FILE_TEST_IS_SYMLINK)
+      && (dir = g_dir_open(dname, 0, NULL))) {
+    while ((name = g_dir_read_name(dir))) {
+      if (name[0] == '.')
+	continue;
+      fullname = g_build_filename(dname, name, NULL);
+      delete_recursive(fullname);
+    }
+  }
+  g_remove(dname);
+}
+
 static void read_records_list()
 {
   WFDB_FILE *listfile;
@@ -587,6 +688,10 @@ static void read_records_list()
 static int try_open_anns(char *recname, const char *annname)
 {
   WFDB_Anninfo ai;
+  char *fname;
+  char *data;
+  int len;
+  WFDB_FILE *tmpf;
   int st;
 
   g_return_val_if_fail(recname != NULL, 0);
@@ -596,6 +701,28 @@ static int try_open_anns(char *recname, const char *annname)
 
   ai.name = g_strdup(annname);
   ai.stat = WFDB_READ;
+
+  if (cache_enabled) {
+    fname = wfdbfile(ai.name, recname);
+    if (g_str_has_prefix(fname, "http://")
+	|| g_str_has_prefix(fname, "https://")) {
+
+      g_printerr("Downloading %s to cache...", fname);
+      fflush(stderr);
+
+      data = url_get(fname, gtk_entry_get_text(GTK_ENTRY(user_name_entry)),
+		     gtk_entry_get_text(GTK_ENTRY(password_entry)),
+		     &len, NULL);
+      if (data && (tmpf = wfdb_open(ai.name, recname, WFDB_WRITE))) {
+	wfdb_fwrite(data, 1, len, tmpf);
+	wfdb_fclose(tmpf);
+      }
+      g_free(data);
+
+      g_printerr(" done\n");
+    }
+  }
+
   st = annopen(recname, &ai, 1);
   g_free(ai.name);
 
@@ -615,28 +742,11 @@ static int at_last_alarm()
           && cur_alarm_index >= cur_record_n_alarms - 1);
 }
 
-static int result_to_statcode(const struct result_info *r)
-{
-  int i;
-
-  g_assert(N_STATUS_BUTTONS == G_N_ELEMENTS(button_status_values));
-
-  for (i = 0; i < N_STATUS_BUTTONS; i++) {
-    if (!g_strcmp0(r->status, button_status_values[i].status)
-        && (!button_status_values[i].substatus
-            || !g_strcmp0(r->substatus, button_status_values[i].substatus))) {
-      return i;
-    }
-  }
-
-  return -1;
-}
-
 static void select_alarm(int index)
 {
   const struct result_info *r;
   int statcode = -1, i, c;
-  int sccount[N_STATUS_BUTTONS];
+  int *sccount;
 
   cur_alarm = NULL;
   g_return_if_fail(index >= 0);
@@ -656,7 +766,7 @@ static void select_alarm(int index)
   button_update = 1;
 
   statcode = result_to_statcode(r);
-  for (i = 0; i < N_STATUS_BUTTONS; i++)
+  for (i = 0; i < n_responses; i++)
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(alarm_button[i]), (statcode == i));
 
   editable_set_text(comment_entry, r->comment);
@@ -664,8 +774,7 @@ static void select_alarm(int index)
   if (compare_mode) {
     c = alarm_has_conflicts(cur_record, cur_alarm->time);
 
-    for (i = 0; i < N_STATUS_BUTTONS; i++)
-      sccount[i] = 0;
+    sccount = g_new0(int, n_responses);
 
     for (i = 0; i < n_reviewers; i++) {
       r = get_result(reviewer_results[i], cur_record, cur_alarm->time);
@@ -674,15 +783,18 @@ static void select_alarm(int index)
         sccount[statcode]++;
     }
 
-    for (i = 0; i < N_STATUS_BUTTONS; i++) {
+    for (i = 0; i < n_responses; i++) {
       if (sccount[i] == 0)
         label_printf(alarm_info_label[i], " ");
       else
         label_printf(alarm_info_label[i], " <b>(%d)</b>", sccount[i]);
     }
 
-    for (i = 0; i < N_STATUS_BUTTONS; i++)
-      gtk_widget_set_sensitive(alarm_button[i], c);
+    g_free(sccount);
+
+    for (i = 0; i < n_responses; i++)
+      gtk_widget_set_sensitive(alarm_button[i],
+			       (c && !responses[i].always_adjudicate));
     gtk_widget_set_sensitive(comment_entry, c);
   }
 
@@ -727,7 +839,6 @@ static int is_target_annotation(const WFDB_Annotation *ann)
 
 static void select_record(int index)
 {
-  int nsig;
   WFDB_Annotation ann;
   int i;
 
@@ -741,12 +852,16 @@ static void select_record(int index)
   cur_record_index = index;
 
   wfdbquit();
+  setwfdb(database_path);
+
+  /*
   nsig = isigopen(cur_record, 0, 0);
   if (nsig < 0) {
     show_message(GTK_MESSAGE_ERROR, "Cannot read record",
 		 "%s", wfdberror());
     exit(1);
   }
+  */
 
   if (!try_open_anns(cur_record, database_annotator)) {
     show_message(GTK_MESSAGE_ERROR, "Cannot read annotations",
@@ -881,7 +996,6 @@ static void prev_to_compare()
   }
 }
 
-
 /**** Callbacks ****/
 
 static void show_time_at_pos(WFDB_Time t, gdouble pos)
@@ -1001,9 +1115,11 @@ static void status_toggled(G_GNUC_UNUSED GtkToggleButton *btn, gpointer data)
   g_return_if_fail(cur_alarm != NULL);
 
   if (!button_update) {
-    if (statcode == BAD_OTHER) {
+    set_status(responses[statcode].status,
+	       responses[statcode].substatus);
+
+    if (responses[statcode].comment_required) {
       comment = editable_get_text(comment_entry);
-      set_status("bad", "other");
       if (!comment || !comment[0]) {
         select_alarm(cur_alarm_index);
         gtk_widget_grab_focus(comment_entry);
@@ -1014,8 +1130,6 @@ static void status_toggled(G_GNUC_UNUSED GtkToggleButton *btn, gpointer data)
       g_free(comment);
     }
     else {
-      set_status(button_status_values[statcode].status,
-                 button_status_values[statcode].substatus);
       accept_input();
     }
   }
@@ -1087,8 +1201,11 @@ static char * get_file_contents(const char *filename)
 static gpointer getobj(GtkBuilder *builder, const char *name)
 {
   gpointer obj = gtk_builder_get_object(builder, name);
-  if (!obj)
-    g_critical("object '%s' not found", name);
+  if (!obj) {
+    show_message(GTK_MESSAGE_ERROR, "Internal error",
+		 "Object '%s' not found", name);
+    abort();
+  }
   return obj;
 }
 
@@ -1128,19 +1245,22 @@ static int version_cmp(const char *v1, const char *v2)
 
 int main(int argc, char **argv)
 {
-  GtkBuilder *builder;
-  GtkWidget *user_name_dialog, *main_box, *options_box, *comp_buttons;
+  GtkBuilder *builder1, *builder2;
+  GtkWidget *main_box, *options_box, *comp_buttons;
   GError *err = NULL;
   int i;
-  char *name;
-  char *results_list_url, *results_post_url, *options_xml;
-  const char *version_req, *options_fname, *msg, *geomstr;
+  const char *version_req, *options_fname, *msg, *geomstr, *path,
+    *user_cache_dir;
+  char *results_list_url, *results_post_url, *options_xml,
+    *orig_working_dir, *cache_dir, *name;
   char geom[50];
 
   gtk_init(&argc, &argv);
 
-  builder = gtk_builder_new();
-  if (!gtk_builder_add_from_file(builder, "metaann.ui", &err)) {
+  orig_working_dir = g_get_current_dir();
+
+  builder1 = gtk_builder_new();
+  if (!gtk_builder_add_from_file(builder1, "metaann.ui", &err)) {
     show_message(GTK_MESSAGE_ERROR, "Internal error",
 		 "%s", err->message);
     return 1;
@@ -1154,9 +1274,11 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  user_name_dialog = getobj(builder, "user_name_dialog");
-  user_name_entry  = getobj(builder, "user_name_entry");
-  password_entry   = getobj(builder, "password_entry");
+  /**** Get username/password to log in ****/
+
+  user_name_dialog = getobj(builder1, "user_name_dialog");
+  user_name_entry  = getobj(builder1, "user_name_entry");
+  password_entry   = getobj(builder1, "password_entry");
   g_signal_connect(user_name_entry, "activate", G_CALLBACK(login_activate), NULL);
   g_signal_connect(password_entry, "activate", G_CALLBACK(login_activate), NULL);
 
@@ -1168,7 +1290,8 @@ int main(int argc, char **argv)
   gtk_entry_set_text(GTK_ENTRY(password_entry),
 		     defaults_get_string("", "Project.Password", ""));
 
-  while (!config_log_in(gtk_entry_get_text(GTK_ENTRY(user_name_entry)),
+  while (!config_log_in(GTK_WINDOW(user_name_dialog),
+			gtk_entry_get_text(GTK_ENTRY(user_name_entry)),
 			gtk_entry_get_text(GTK_ENTRY(password_entry)))) {
 
     if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(user_name_entry)), ""))
@@ -1176,15 +1299,24 @@ int main(int argc, char **argv)
     else
       gtk_widget_grab_focus(user_name_entry);
 
+    gtk_window_present(GTK_WINDOW(user_name_dialog));
     if (gtk_dialog_run(GTK_DIALOG(user_name_dialog)) != 1)
       /* cancel button clicked */
       return 1;
   } 
 
-  gtk_widget_hide(user_name_dialog);
-
+  /* save username in user.conf */
   defaults_set_string("", "Project.UserName",
 		      gtk_entry_get_text(GTK_ENTRY(user_name_entry)));
+
+  /* make dialog appear insensitive but don't hide it so user knows
+     the program is still running... a real progress dialog would be
+     nice but also take some work */
+  gtk_widget_set_sensitive(user_name_dialog, FALSE);
+  while (gtk_events_pending())
+    gtk_main_iteration();
+
+  /**** Load project configuration ****/
 
   version_req = defaults_get_string("", "Metaann.Version", "");
   if (version_cmp(METAANN_VERSION, version_req) < 0) {
@@ -1196,7 +1328,9 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  database_path = g_strdup(defaults_get_string("", "Database.DBPath", ""));
+  path = defaults_get_string("", "Database.DBPath", "");
+  database_path = g_strconcat(". ", path, NULL);
+  database_calfile = g_strdup(defaults_get_string("", "Database.DBCalFile", ""));
   database_annotator = g_strdup(defaults_get_string("", "Database.Annotator", ""));
   record_list_url = g_strdup(defaults_get_string("", "Database.RecordList", ""));
   target_anntyp = defaults_get_integer("", "Database.AnnotationType", TARGET_ANY);
@@ -1210,47 +1344,96 @@ int main(int argc, char **argv)
 
   /* ugh, need to do this before calling isigopen (or other high-level
      wfdb funcs) for the first time */
-  setwfdb(database_path);
+  if (database_path && database_path[0])
+    setwfdb(database_path);
 
-  options_fname = defaults_get_string("", "Metaann.OptionsFile", "options.ui");
+  /* there should also be a cleaner way to do this... */
+  if (database_calfile && database_calfile[0])
+    g_setenv("WFDBCAL", database_calfile, TRUE);
+
+  options_fname = defaults_get_string("", "Responses.InterfaceXML", "options.ui");
+  g_printerr("loading UI from %s\n", options_fname);
+
   options_xml = get_file_contents(options_fname);
-  if (!gtk_builder_add_from_string(builder, options_xml, -1, &err)) {
+  builder2 = gtk_builder_new();
+  if (!gtk_builder_add_from_string(builder2, options_xml, -1, &err)) {
     show_message(GTK_MESSAGE_ERROR, "Internal error",
 		 "%s", err ? err->message : NULL);
     return 1;
   }
   g_free(options_xml);
 
+  init_statcodes();
+
+  /**** Create cache directory and chdir to it ****/
+
+  /* (note, we have to chdir to it (a) so that wfdb_open() works, and
+     (b) because it might contain spaces, especially on Windows.) */
+
+  user_cache_dir = g_get_user_cache_dir();
+  if (user_cache_dir) {
+    cache_dir = g_build_filename(user_cache_dir, "metaann", NULL);
+    delete_recursive(cache_dir);
+    if (!g_mkdir_with_parents(cache_dir, 0700) && !g_chdir(cache_dir)) {
+#ifdef G_OS_WIN32
+      char *oldfile = g_build_filename(orig_working_dir, "curl-ca-bundle.crt", NULL);
+      char *newfile = g_build_filename(cache_dir, "curl-ca-bundle.crt", NULL);
+      FILE *f1, *f2;
+      char buf[1024];
+      int n;
+
+      /* copy CA certificate bundle to cache dir so that curl will be
+	 able to find it
+
+	 gahhh this is an ugly kludge */
+
+      f1 = g_fopen(oldfile, "rb");
+      f2 = g_fopen(newfile, "wb");
+      if (f1 && f2) {
+	while ((n = fread(buf, 1, sizeof(buf), f1)) > 0)
+	  fwrite(buf, 1, n, f2);
+      }
+      if (f1) fclose(f1);
+      if (f2) fclose(f2);
+#endif
+      cache_enabled = 1;
+    }
+  }
+  else
+    cache_dir = NULL;
+
+  /**** Create annotation toolbox window ****/
+
   /* defined in metaann.ui */
-  window                = getobj(builder, "window");
-  main_box              = getobj(builder, "main_box");
-  record_label          = getobj(builder, "record_label");
-  record_num_label      = getobj(builder, "record_num_label");
-  ann_label             = getobj(builder, "ann_label");
-  ann_num_label         = getobj(builder, "ann_num_label");
-  message_label         = getobj(builder, "message_label");
-  time_scale_combo      = getobj(builder, "time_scale_combo");
-  ampl_scale_combo      = getobj(builder, "ampl_scale_combo");
-  prev_button           = getobj(builder, "prev_button");
-  next_button           = getobj(builder, "next_button");
-  recenter_button       = getobj(builder, "recenter_button");
-  prevcomp_button       = getobj(builder, "prevcomp_button");
-  nextcomp_button       = getobj(builder, "nextcomp_button");
+  window                = getobj(builder1, "window");
+  main_box              = getobj(builder1, "main_box");
+  record_label          = getobj(builder1, "record_label");
+  record_num_label      = getobj(builder1, "record_num_label");
+  ann_label             = getobj(builder1, "ann_label");
+  ann_num_label         = getobj(builder1, "ann_num_label");
+  message_label         = getobj(builder1, "message_label");
+  time_scale_combo      = getobj(builder1, "time_scale_combo");
+  ampl_scale_combo      = getobj(builder1, "ampl_scale_combo");
+  prev_button           = getobj(builder1, "prev_button");
+  next_button           = getobj(builder1, "next_button");
+  recenter_button       = getobj(builder1, "recenter_button");
+  prevcomp_button       = getobj(builder1, "prevcomp_button");
+  nextcomp_button       = getobj(builder1, "nextcomp_button");
 
   /* defined in options.ui */
-  options_box           = getobj(builder, "options_box");
-  comment_entry         = getobj(builder, "comment_entry");
+  options_box           = getobj(builder2, "options_box");
+  comment_entry         = getobj(builder2, "comment_entry");
 
   gtk_box_pack_start(GTK_BOX(main_box), options_box, TRUE, TRUE, 0);
 
-  for (i = 0; i < N_STATUS_BUTTONS; i++) {
-    name = g_strdup_printf("%s_alarm_button", button_status_values[i].ui_name);
-    alarm_button[i] = getobj(builder, name);
+  for (i = 0; i < n_responses; i++) {
+    name = g_strdup_printf("%s_button", responses[i].ui_name);
+    alarm_button[i] = getobj(builder2, name);
     g_free(name);
     g_signal_connect(alarm_button[i], "toggled", G_CALLBACK(status_toggled), GINT_TO_POINTER(i));
 
-    name = g_strdup_printf("%s_alarm_info_label", button_status_values[i].ui_name);
-    alarm_info_label[i] = getobj(builder, name);
+    name = g_strdup_printf("%s_info_label", responses[i].ui_name);
+    alarm_info_label[i] = getobj(builder2, name);
     g_free(name);
   }
 
@@ -1275,14 +1458,17 @@ int main(int argc, char **argv)
 
   gtk_widget_grab_focus(recenter_button);
 
-  comp_buttons = getobj(builder, "comp_buttons");
+  comp_buttons = getobj(builder1, "comp_buttons");
   if (compare_mode)
     gtk_widget_show(comp_buttons);
   else
     gtk_widget_hide(comp_buttons);
 
-  g_object_unref(builder);
-  builder = NULL;
+  g_object_unref(builder1);
+  g_object_unref(builder2);
+  builder1 = builder2 = NULL;
+
+  /**** Read list of records and annotations so far ****/
 
   read_records_list();
   read_results_list(&my_results, results_list_url, results_post_url);
@@ -1319,7 +1505,7 @@ int main(int argc, char **argv)
     }
   }
 
-  gtk_widget_show_all(window);
+  /**** Create wave window ****/
 
   g_snprintf(geom, sizeof(geom), "%dx%d-0+0",
 	     950, gdk_screen_get_height(gdk_screen_get_default()));
@@ -1332,11 +1518,22 @@ int main(int argc, char **argv)
 
   recenter_clicked(NULL, NULL);
 
+  gtk_widget_show_all(window);
+  gtk_widget_hide(user_name_dialog);
+
   gtk_combo_box_set_active(GTK_COMBO_BOX(time_scale_combo), tsa_index);
   gtk_combo_box_set_active(GTK_COMBO_BOX(ampl_scale_combo), vsa_index);
 
+  /**** Main loop ****/
+
   gtk_main();
+
   flush_results();
+
+  if (cache_enabled) {
+    g_chdir(orig_working_dir);
+    delete_recursive(cache_dir);
+  }
+
   return 0;
 }
-

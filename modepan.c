@@ -1,30 +1,25 @@
-/* file: modepan.c	G. Moody        30 April 1990
-			Last revised:	 12 May 2009
-Mode panel functions for WAVE
-
--------------------------------------------------------------------------------
-WAVE: Waveform analyzer, viewer, and editor
-Copyright (C) 1990-2009 George B. Moody
-
-This program is free software; you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free Software
-Foundation; either version 2 of the License, or (at your option) any later
-version.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE.  See the GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License along with
-this program; if not, write to the Free Software Foundation, Inc., 59 Temple
-Place - Suite 330, Boston, MA 02111-1307, USA.
-
-You may contact the author by e-mail (george@mit.edu) or postal mail
-(MIT Room E25-505A, Cambridge, MA 02139 USA).  For updates to this software,
-please visit PhysioNet (http://www.physionet.org/).
-_______________________________________________________________________________
-
-*/
+/*
+ * Metaann
+ *
+ * Copyright (C) 1990-2009 George B. Moody
+ * Copyright (C) 2014 Benjamin Moody
+ *
+ * Based on 'modepan.c' from the WAVE package (revised 12 May 2009);
+ * modified by Benjamin Moody, 22 August 2014.
+ *
+ * This program is free software: you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation, either version 2 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include "wave.h"
 #include "gtkwave.h"

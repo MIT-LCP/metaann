@@ -1,3 +1,22 @@
+/*
+ * Metaann
+ *
+ * Copyright (C) 2014 Benjamin Moody
+ *
+ * This program is free software: you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation, either version 2 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #include "wave.h"
 #include "gtkwave.h"
 #include <wfdb/wfdblib.h>
@@ -21,8 +40,9 @@ static GKeyFile *package_config;
 static GKeyFile *project_config;
 static GKeyFile *user_config;
 
-static G_GNUC_PRINTF(2, 3)
-void show_warning(const char *primary, const char *fmt, ...)
+static G_GNUC_PRINTF(3, 4)
+void show_warning(GtkWindow *parent_window, const char *primary,
+		  const char *fmt, ...)
 {
     va_list ap;
     char *msg;
@@ -33,7 +53,7 @@ void show_warning(const char *primary, const char *fmt, ...)
     va_end(ap);
 
     dlg = gtk_message_dialog_new
-	(NULL, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING,
+	(parent_window, GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING,
 	 GTK_BUTTONS_OK, "%s", primary);
     gtk_message_dialog_format_secondary_text
       (GTK_MESSAGE_DIALOG(dlg), "%s", msg);
@@ -41,7 +61,7 @@ void show_warning(const char *primary, const char *fmt, ...)
     gtk_widget_destroy(dlg);
 }
 
-static void load_config()
+static void load_config(GtkWindow *parent_window)
 {
     GError *err = NULL;
 
@@ -49,7 +69,8 @@ static void load_config()
 	package_config = g_key_file_new();
 	g_key_file_load_from_file(package_config, PACKAGE_CONF_FILE, 0, &err);
 	if (err) {
-	    show_warning("Error loading configuration", "%s", err->message);
+	    show_warning(parent_window, "Error loading configuration",
+			 "%s", err->message);
 	    g_clear_error(&err);
 	}
     }
@@ -68,7 +89,8 @@ static void load_config()
 	}
 
 	if (err) {
-	    show_warning("Error loading configuration", "%s", err->message);
+	    show_warning(parent_window, "Error loading configuration",
+			 "%s", err->message);
 	    g_clear_error(&err);
 	}
     }
@@ -78,7 +100,8 @@ static void load_config()
     }
 }
 
-static gboolean load_project_config(const char *project_url)
+static gboolean load_project_config(GtkWindow *parent_window,
+				    const char *project_url)
 {
     WFDB_FILE *cfile;
     GString *conf_data;
@@ -87,7 +110,7 @@ static gboolean load_project_config(const char *project_url)
     GError *err = NULL;
 
     if (!(cfile = wfdb_fopen((char*) project_url, "r"))) {
-	show_warning("Cannot read project configuration",
+	show_warning(parent_window, "Cannot read project configuration",
 		     "Unable to access '%s'", project_url);
 	return FALSE;
     }
@@ -101,7 +124,7 @@ static gboolean load_project_config(const char *project_url)
     g_string_free(conf_data, TRUE);
 
     if (err) {
-	show_warning("Error loading project configuration",
+	show_warning(parent_window, "Error loading project configuration",
 		     "%s", err->message);
 	g_clear_error(&err);
 	return FALSE;
@@ -111,12 +134,13 @@ static gboolean load_project_config(const char *project_url)
     }
 }
 
-gboolean config_log_in(const char *username, const char *password)
+gboolean config_log_in(GtkWindow *parent_window,
+		       const char *username, const char *password)
 {
     char *project_url, *prefix, *s, *p;
     GError *err = NULL;
 
-    load_config();
+    load_config(parent_window);
 
     project_url = g_key_file_get_string(user_config, "Project",
 					"Config", NULL);
@@ -128,7 +152,7 @@ gboolean config_log_in(const char *username, const char *password)
 
     if (!g_str_has_prefix(project_url, "https://")
 	&& !g_str_has_prefix(project_url, "http://")) {
-	load_project_config(project_url);
+	load_project_config(parent_window, project_url);
 	g_free(project_url);
 	return TRUE;
     }
@@ -143,7 +167,7 @@ gboolean config_log_in(const char *username, const char *password)
 
     if (!url_head(project_url, username, password, &err)) {
 	g_free(project_url);
-	show_warning("Unable to log in", "%s", err->message);
+	show_warning(parent_window, "Unable to log in", "%s", err->message);
 	g_clear_error(&err);
 	return FALSE;
     }
@@ -159,7 +183,7 @@ gboolean config_log_in(const char *username, const char *password)
     g_free(prefix);
     g_free(s);
 
-    load_project_config(project_url);
+    load_project_config(parent_window, project_url);
     g_free(project_url);
     return TRUE;
 }
@@ -191,7 +215,7 @@ const char * defaults_get_string(G_GNUC_UNUSED const char *name,
     static char *value;
     char *group, *key;
 
-    load_config();
+    load_config(NULL);
     g_free(value);
     value = NULL;
 
@@ -219,7 +243,7 @@ int defaults_get_integer(G_GNUC_UNUSED const char *name,
     GError *err = NULL;
     int value;
 
-    load_config();
+    load_config(NULL);
 
     /*printf("[DEF] %s = %d\n", classname, ddefault);*/
 
@@ -253,7 +277,7 @@ int defaults_get_boolean(G_GNUC_UNUSED const char *name,
     GError *err = NULL;
     int value;
 
-    load_config();
+    load_config(NULL);
 
     /*printf("[DEF] %s = %s\n", classname, ddefault ? "true" : "false");*/
 
@@ -285,7 +309,7 @@ gboolean defaults_set_string(G_GNUC_UNUSED const char *name,
 {
     char *group, *key;
 
-    load_config();
+    load_config(NULL);
 
     key = strchr(classname, '.');
     g_return_val_if_fail(key != NULL, FALSE);

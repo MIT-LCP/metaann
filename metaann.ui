@@ -365,8 +365,7 @@
               <object class="GtkLabel" id="label16">
                 <property name="visible">True</property>
                 <property name="xalign">0</property>
-                <property name="label" translatable="yes">&lt;s&gt;&lt;big&gt;&lt;b&gt;Log in to PhysioNetWorks&lt;/b&gt;&lt;/big&gt;&lt;/s&gt;
-&lt;small&gt;metaann alpha: user 'a@b.com', pass 'asdf'&lt;/small&gt;</property>
+                <property name="label" translatable="yes">&lt;big&gt;&lt;b&gt;Log in to PhysioNetWorks&lt;/b&gt;&lt;/big&gt;</property>
                 <property name="use_markup">True</property>
               </object>
               <packing>

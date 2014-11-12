@@ -20,10 +20,6 @@
 #include "wave.h"
 #include "gtkwave.h"
 
-#define LARROW "\342\227\202"
-#define RARROW "\342\226\270"
-#define THINSP "\342\200\211"
-
 void set_display_start_time(WFDB_Time t)
 {
     display_start_time = MAX(0, t);
@@ -60,6 +56,20 @@ static void grid_mode_changed(GtkComboBox *combo,
     set_grid_mode(gtk_combo_box_get_active(combo));
 }
 
+static GtkWidget *make_arrows(int n, GtkArrowType type)
+{
+    GtkWidget *box, *arrow, *align;
+    box = gtk_hbox_new(FALSE, 0);
+    while (n > 0) {
+	arrow = gtk_arrow_new(type, GTK_SHADOW_NONE);
+	gtk_box_pack_start(GTK_BOX(box), arrow, FALSE, FALSE, 0);
+	n--;
+    }
+    align = gtk_alignment_new(0.5, 0.5, 0.0, 0.0);
+    gtk_container_add(GTK_CONTAINER(align), box);
+    return align;
+}
+
 GtkWidget *create_wave_window()
 {
     static const char * const grid_items[] =
@@ -91,19 +101,23 @@ GtkWidget *create_wave_window()
 
     hbox2 = gtk_hbox_new(TRUE, 6);
     gtk_box_pack_start(GTK_BOX(hbox), hbox2, TRUE, TRUE, 0);
-    btn = gtk_button_new_with_label(""LARROW THINSP LARROW"");
+    btn = gtk_button_new();
+    gtk_container_add(GTK_CONTAINER(btn), make_arrows(2, GTK_ARROW_LEFT));
     gtk_widget_set_tooltip_text(btn, "Scroll backward by a full screen");
     g_signal_connect(btn, "clicked", G_CALLBACK(scroll_back_full), NULL);
     gtk_box_pack_start(GTK_BOX(hbox2), btn, FALSE, TRUE, 0);
-    btn = gtk_button_new_with_label(LARROW);
+    btn = gtk_button_new();
+    gtk_container_add(GTK_CONTAINER(btn), make_arrows(1, GTK_ARROW_LEFT));
     gtk_widget_set_tooltip_text(btn, "Scroll backward by half a screen");
     g_signal_connect(btn, "clicked", G_CALLBACK(scroll_back_half), NULL);
     gtk_box_pack_start(GTK_BOX(hbox2), btn, FALSE, TRUE, 0);
-    btn = gtk_button_new_with_label(RARROW);
+    btn = gtk_button_new();
+    gtk_container_add(GTK_CONTAINER(btn), make_arrows(1, GTK_ARROW_RIGHT));
     gtk_widget_set_tooltip_text(btn, "Scroll forward by half a screen");
     g_signal_connect(btn, "clicked", G_CALLBACK(scroll_forward_half), NULL);
     gtk_box_pack_start(GTK_BOX(hbox2), btn, FALSE, TRUE, 0);
-    btn = gtk_button_new_with_label(""RARROW THINSP RARROW"");
+    btn = gtk_button_new();
+    gtk_container_add(GTK_CONTAINER(btn), make_arrows(2, GTK_ARROW_RIGHT));
     gtk_widget_set_tooltip_text(btn, "Scroll forward by a full screen");
     g_signal_connect(btn, "clicked", G_CALLBACK(scroll_forward_full), NULL);
     gtk_box_pack_start(GTK_BOX(hbox2), btn, FALSE, TRUE, 0);

@@ -61,6 +61,7 @@ void show_warning(GtkWindow *parent_window, const char *primary,
     gtk_widget_destroy(dlg);
 }
 
+/* Load the default configuration files. */
 static void load_config(GtkWindow *parent_window)
 {
     GError *err = NULL;
@@ -100,14 +101,17 @@ static void load_config(GtkWindow *parent_window)
     }
 }
 
-static gboolean load_project_config(GtkWindow *parent_window,
-				    const char *project_url)
+/* Load a project configuration file. */
+gboolean load_project(GtkWindow *parent_window,
+		      const char *project_url)
 {
     WFDB_FILE *cfile;
     GString *conf_data;
     char buf[1024];
     int n;
     GError *err = NULL;
+
+    load_config(parent_window);
 
     if (!(cfile = wfdb_fopen((char*) project_url, "r"))) {
 	show_warning(parent_window, "Cannot read project configuration",
@@ -134,28 +138,13 @@ static gboolean load_project_config(GtkWindow *parent_window,
     }
 }
 
-gboolean config_log_in(GtkWindow *parent_window,
-		       const char *username, const char *password)
+static gboolean check_access(GtkWindow *parent_window, const char *url,
+			     const char *username, const char *password)
 {
-    char *project_url, *prefix, *s, *p;
     GError *err = NULL;
 
-    load_config(parent_window);
-
-    project_url = g_key_file_get_string(user_config, "Project",
-					"Config", NULL);
-    if (!project_url)
-	project_url = g_key_file_get_string(package_config, "Project",
-					    "Config", NULL);
-    if (!project_url)
+    if (!g_str_has_prefix(url, "https://") && !g_str_has_prefix(url, "http://"))
 	return TRUE;
-
-    if (!g_str_has_prefix(project_url, "https://")
-	&& !g_str_has_prefix(project_url, "http://")) {
-	load_project_config(parent_window, project_url);
-	g_free(project_url);
-	return TRUE;
-    }
 
     if (!username || !username[0] || !password || !password[0])
 	return FALSE;
@@ -165,27 +154,129 @@ gboolean config_log_in(GtkWindow *parent_window,
        wfdb functions until we have verified the username/password is
        valid */
 
-    if (!url_head(project_url, username, password, &err)) {
-	g_free(project_url);
+    if (!url_head(url, username, password, &err)) {
 	show_warning(parent_window, "Unable to log in", "%s", err->message);
 	g_clear_error(&err);
 	return FALSE;
     }
 
-    p = project_url;
+    return TRUE;
+}
+
+static void set_wfdbpassword_from_url(const char *url,
+				      const char *username,
+				      const char *password)
+{
+    const char *p;
+    char *prefix, *s;
+
+    if (!g_str_has_prefix(url, "https://") && !g_str_has_prefix(url, "http://"))
+	return;
+
+    p = url;
     while (*p && *p != '/') p++;
     while (*p && *p == '/') p++;
     while (*p && *p != '/') p++;
-    prefix = g_strndup(project_url, p - project_url);
+    prefix = g_strndup(url, p - url);
 
     s = g_strconcat(prefix, " ", username, ":", password, NULL);
     g_setenv("WFDBPASSWORD", s, TRUE);
     g_free(prefix);
     g_free(s);
+}
 
-    load_project_config(parent_window, project_url);
-    g_free(project_url);
-    return TRUE;
+struct project_list * get_project_list(GtkWindow *parent_window,
+				       const char *username,
+				       const char *password)
+{
+    char *project_url, *list_url;
+    struct project_list *list;
+    WFDB_FILE *lfile;
+    char buf[10000];
+    char **strs;
+    int n;
+    int authorized;
+
+    load_config(parent_window);
+
+    /* check for hardcoded project path */
+
+    project_url = g_key_file_get_string(user_config, "Project",
+					"Config", NULL);
+    if (!project_url)
+	project_url = g_key_file_get_string(package_config, "Project",
+					    "Config", NULL);
+    if (project_url) {
+	if (check_access(parent_window, project_url, username, password)) {
+	    set_wfdbpassword_from_url(project_url, username, password);
+	    list = g_new0(struct project_list, 2);
+	    list[0].url = project_url;
+	    list[0].reviewer = 1;
+	    list[0].adjudicator = 0;
+	    return list;
+	}
+	else {
+	    g_free(project_url);
+	    return NULL;
+	}
+    }
+
+    /* check for dynamic project list (PNW) */
+
+    list_url = g_key_file_get_string(user_config, "Project",
+				     "ProjectList", NULL);
+    if (!list_url)
+	list_url = g_key_file_get_string(package_config, "Project",
+					 "ProjectList", NULL);
+    if (list_url) {
+	if (!check_access(parent_window, list_url, username, password))
+	    return NULL;
+
+	set_wfdbpassword_from_url(list_url, username, password);
+
+	if (!(lfile = wfdb_fopen(list_url, "r"))) {
+	    show_warning(parent_window, "Cannot read list of projects",
+			 "Unable to access '%s'", list_url);
+	    return NULL;
+	}
+
+	n = 0;
+	list = NULL;
+	while (wfdb_fgets(buf, sizeof(buf), lfile)) {
+	    strs = g_strsplit(buf, "\t", -1);
+	    if (strs && strs[0] && strs[1] && strs[2]) {
+		list = g_renew(struct project_list, list, n + 2);
+		list[n].url = g_strdup(strs[0]);
+		list[n].title = g_strstrip(g_strdup(strs[2]));
+
+		authorized = atoi(strs[1]);
+		list[n].reviewer = (authorized && strchr(strs[1], 'r'));
+		list[n].adjudicator = (authorized && strchr(strs[1], 'a'));
+
+		n++;
+		list[n].url = NULL;
+		list[n].title = NULL;
+	    }
+	    g_strfreev(strs);
+	}
+	wfdb_fclose(lfile);
+	return list;
+    }
+
+    show_warning(parent_window, "No projects defined",
+		 "No ProjectList is defined in metaann.conf.  "
+		 "You may need to reinstall the package.");
+    return NULL;
+}
+
+void free_project_list(struct project_list *list)
+{
+    int n;
+    for (n = 0; list && list[n].url; n++) {
+	g_free(list[n].url);
+	g_free(list[n].title);
+    }
+    g_free(list);
 }
 
 static gboolean save_config()

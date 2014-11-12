@@ -1,0 +1,25 @@
+Version 0.4
+
+ * After logging in, metaann now retrieves a list of active projects
+   from the web server and lets you select one.
+
+ * Adjudication mode is now working (it was previously implemented in
+   edit-alarms, the predecessor to metaann, but was incomplete in
+   metaann 0.3.)  You can select adjudication mode from the project
+   selection dialog, if the project administrator has enabled it.
+
+ * Very small time scales are not listed in the menu, in order to
+   prevent you from selecting them accidentally (and thus requiring
+   metaann to download a correspondingly huge section of the waveform
+   data.)  By default, time scales smaller than 125 mm/min will not be
+   shown; this can be controlled by the project configuration.
+
+ * The list of records is shown as a combo box so you can jump back to
+   a previous record, or get an idea of your overall progress.  An
+   open circle is shown next for each record that you have partially
+   annotated; a filled circle is shown for each record that you have
+   fully annotated.  Likewise, the list of alarms for the current
+   record is shown as a combo box so that you can jump around within
+   the record; a filled circle denotes an alarm you have annotated,
+   and an open circle denotes one you have marked as uncertain.
+

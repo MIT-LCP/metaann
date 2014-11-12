@@ -19,8 +19,21 @@
 
 #include <glib.h>
 
-gboolean config_log_in(GtkWindow *parent_window,
-		       const char *username, const char *password);
+struct project_list {
+    char *url;
+    char *title;
+    int reviewer;
+    int adjudicator;
+};
+
+struct project_list * get_project_list(GtkWindow *parent_window,
+				       const char *username,
+				       const char *password);
+
+void free_project_list(struct project_list *list);
+
+gboolean load_project(GtkWindow *parent_window,
+		      const char *project_url);
 
 gboolean defaults_set_string(const char *name,
 			     const char *classname,

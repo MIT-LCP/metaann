@@ -64,6 +64,7 @@ struct alarm_pos {
 struct record_info {
   char *name;
   int n_alarms;
+  int n_conflicts;
 };
 
 static int n_records;
@@ -106,9 +107,9 @@ struct result_info {
 };
 
 struct results_list {
+  char *username;
   char *post_url;
-  int n_results;
-  struct result_info *results;
+  GHashTable *results;
 };
 
 static struct results_list my_results;
@@ -120,16 +121,43 @@ static const struct result_info *pending_result;
 
 /* User interface objects */
 
-static GtkWidget *window, *record_label, *record_num_label,
-  *ann_label, *ann_num_label, *message_label,
+static GtkWidget *window, *record_combo, *ann_combo, *message_label,
   *time_scale_combo, *ampl_scale_combo,
   *prev_button, *next_button, *recenter_button,
   *prevcomp_button, *nextcomp_button,
   **alarm_button, *comment_entry,
   **alarm_info_label;
 static GtkWidget *user_name_dialog, *user_name_entry, *password_entry;
+static GtkWidget *project_dialog, *project_tree_view,
+  *project_mode_box, *project_reviewer_button,
+  *project_adjudicator_button;
 static GtkWidget *wave_window;
+static GtkListStore *record_store, *ann_store;
 static int button_update;
+
+static int min_tsa_index;
+
+enum {
+  REC_COL_STATUS,
+  REC_COL_NAME,
+  REC_COL_INDEX,
+  REC_N_COLS
+};
+
+enum {
+  ANN_COL_STATUS,
+  ANN_COL_TIME,
+  ANN_COL_INDEX,
+  ANN_N_COLS
+};
+
+#define S_COMPLETE "\342\227\217"
+#define S_PARTIAL  "\342\227\213"
+#define S_UNSEEN   " "
+
+#define S_ADJ_UNNEEDED " "
+#define S_ADJ_NEEDED   "\342\226\241"
+#define S_ADJ_DONE     "\342\226\240"
 
 /**** Utilities ****/
 
@@ -254,44 +282,63 @@ static int result_to_statcode(const struct result_info *r)
 
 /**** Results list ****/
 
+static guint result_pos_hash(gconstpointer key)
+{
+  const struct result_info *r = key;
+  g_return_val_if_fail(r != NULL, 0);
+  return g_str_hash(r->record) + r->time;
+}
+
+static gboolean result_pos_equal(gconstpointer key1,
+				 gconstpointer key2)
+{
+  const struct result_info *r1 = key1;
+  const struct result_info *r2 = key2;
+  g_return_val_if_fail(r1 != NULL, 0);
+  g_return_val_if_fail(r2 != NULL, 0);
+  return (r1->time == r2->time
+	  && !g_strcmp0(r1->record, r2->record));
+}
+
 static const struct result_info * put_result(struct results_list *rl,
 					     const char *record, WFDB_Time t,
 					     const char *status,
 					     const char *substatus,
 					     const char *comment)
 {
-  int i;
+  struct result_info tmp, *r;
 
   g_return_val_if_fail(record != NULL, NULL);
 
-  for (i = 0; i < rl->n_results; i++) {
-    if (t == rl->results[i].time
-        && !g_strcmp0(record, rl->results[i].record)) {
+  if (!rl->results)
+    rl->results = g_hash_table_new(&result_pos_hash, &result_pos_equal);
 
-      if (status) {
-        g_free(rl->results[i].status);
-        rl->results[i].status = g_strdup(status);
-      }
-      if (substatus) {
-        g_free(rl->results[i].substatus);
-        rl->results[i].substatus = g_strdup(substatus);
-      }
-      if (comment) {
-        g_free(rl->results[i].comment);
-        rl->results[i].comment = g_strdup(comment);
-      }
-      return &rl->results[i];
+  tmp.record = (char *) record;
+  tmp.time = t;
+  if ((r = g_hash_table_lookup(rl->results, &tmp))) {
+    if (status) {
+      g_free(r->status);
+      r->status = g_strdup(status);
     }
+    if (substatus) {
+      g_free(r->substatus);
+      r->substatus = g_strdup(substatus);
+    }
+    if (comment) {
+      g_free(r->comment);
+      r->comment = g_strdup(comment);
+    }
+    return r;
   }
 
-  rl->n_results++;
-  rl->results = g_renew(struct result_info, rl->results, rl->n_results);
-  rl->results[rl->n_results - 1].record = g_strdup(record);
-  rl->results[rl->n_results - 1].time = t;
-  rl->results[rl->n_results - 1].status = g_strdup(status ? status : "");
-  rl->results[rl->n_results - 1].substatus = g_strdup(substatus ? substatus : "");
-  rl->results[rl->n_results - 1].comment = g_strdup(comment ? comment : "");
-  return &rl->results[rl->n_results - 1];
+  r = g_slice_new(struct result_info);
+  r->record = g_strdup(record);
+  r->time = t;
+  r->status = g_strdup(status ? status : "");
+  r->substatus = g_strdup(substatus ? substatus : "");
+  r->comment = g_strdup(comment ? comment : "");
+  g_hash_table_insert(rl->results, r, r);
+  return r;
 }
 
 static void read_results_list(struct results_list *rl,
@@ -307,9 +354,6 @@ static void read_results_list(struct results_list *rl,
 
   g_return_if_fail(rl != NULL);
   g_return_if_fail(list_url != NULL);
-
-  if (!post_url || !post_url[0])
-    post_url = list_url;
 
   g_free(rl->post_url);
   rl->post_url = g_strdup(post_url);
@@ -364,31 +408,6 @@ static void read_results_list(struct results_list *rl,
 static void save_result(struct results_list *rl,
 			const struct result_info *r)
 {
-  /*
-  FILE *listfile;
-  int i;
-
-  g_return_if_fail(rl != NULL);
-  g_return_if_fail(rl->filename != NULL);
-
-  listfile = fopen(rl->filename, "w");
-  if (!listfile) {
-    perror(rl->filename);
-    exit(1);
-  }
-
-  for (i = 0; i < rl->n_results; i++) {
-    fprintf(listfile, "%s\t%ld\t%s\t%s\t%s\n",
-            rl->results[i].record,
-            (long int) rl->results[i].time,
-            rl->results[i].status,
-            rl->results[i].substatus,
-            rl->results[i].comment);
-  }
-
-  fclose(listfile);
-  */
-
   GString *postdata;
   char *response;
   GError *err = NULL;
@@ -437,16 +456,14 @@ static const struct result_info * get_result(struct results_list *rl,
                                              const char *record, WFDB_Time t)
 {
   static const struct result_info null_result;
-  int i;
+  struct result_info tmp, *r;
 
   g_return_val_if_fail(record != NULL, &null_result);
 
-  for (i = 0; i < rl->n_results; i++) {
-    if (t == rl->results[i].time
-        && !g_strcmp0(record, rl->results[i].record)) {
-      return &rl->results[i];
-    }
-  }
+  tmp.record = (char *) record;
+  tmp.time = t;
+  if (rl->results && (r = g_hash_table_lookup(rl->results, &tmp)))
+    return r;
 
   return &null_result;
 }
@@ -458,18 +475,30 @@ static int check_annotated(struct results_list *rl,
   return (r && r->status != NULL && r->status[0] != 0);
 }
 
+struct result_search_info {
+  const char *record;
+  int count;
+};
+
+static void count_record_results(G_GNUC_UNUSED gpointer key,
+				 gpointer value, gpointer data)
+{
+  const struct result_info *r = value;
+  struct result_search_info *rsi = data;
+  g_return_if_fail(r != NULL);
+  if (!g_strcmp0(r->record, rsi->record))
+    rsi->count++;
+}
+
 static int n_results_for_record(struct results_list *rl,
 				const char *record)
 {
-  int i, n = 0;
-  for (i = 0; i < rl->n_results; i++) {
-    if (!g_strcmp0(record, rl->results[i].record)
-	&& rl->results[i].status
-	&& rl->results[i].status[0])
-      n++;
-  }
-
-  return n;
+  struct result_search_info rsi;
+  rsi.record = record;
+  rsi.count = 0;
+  if (rl->results)
+    g_hash_table_foreach(rl->results, &count_record_results, &rsi);
+  return rsi.count;
 }
 
 static int results_conflict(const struct result_info *r1,
@@ -509,13 +538,16 @@ static int results_conflict(const struct result_info *r1,
 static int alarm_has_conflicts(const char *record, WFDB_Time time)
 {
   int i;
-  const struct result_info *r1, *r2;
+  const struct result_info *r1 = NULL, *r2;
   
   for (i = 0; i < n_reviewers; i++) {
     r1 = get_result(reviewer_results[i], record, time);
     if (r1->status && r1->status[0])
       break;
   }
+
+  if (i >= n_reviewers)
+    return 0;
 
   for (i++; i < n_reviewers; i++) {
     r2 = get_result(reviewer_results[i], record, time);
@@ -526,16 +558,17 @@ static int alarm_has_conflicts(const char *record, WFDB_Time time)
   return 0;
 }
 
-#if 0
 static int find_rec(const char *name)
 {
   int i;
+
+  g_return_val_if_fail(name != NULL, -1);
 
   for (i = 0; i < n_records; i++)
     if (!strcmp(name, records[i].name))
       return i;
 
-  g_warning("can't find record %s", name);
+  g_printerr("warning: can't find record %s\n", name);
   return -1;
 }
 
@@ -549,47 +582,63 @@ static int compare_alarm_pos(const void *p1, const void *p2)
   if (ap1->time > ap2->time) return 1;
   return 0;
 }
-#endif
 
-static void read_reviewer_results()
+static void read_reviewer_results(const char *users_url,
+				  const char *results_url)
 {
-#if 0
-  GDir *dir;
-  GError *err = NULL;
-  const char *name;
-  const char prefix[] = "alarm-info.";
-  int i, j, k;
+  WFDB_FILE *usersfile;
+  char buf[10000], *p;
+  GString *url;
+  int i, k, rn;
   const struct result_info *r1, *r2;
   int n, conflict, total1, total2;
+  GHashTableIter iter;
+  gpointer key, val;
 
-  dir = g_dir_open(".", 0, &err);
-  if (err)
-    g_error("%s", err->message);
+  usersfile = wfdb_fopen((char*) users_url, "r");
+  if (!usersfile) {
+    /* FIXME: handle gracefully */
+    g_error("cannot read user list '%s'\n", users_url);
+  }
 
-  while ((name = g_dir_read_name(dir))) {
-    if (!strncmp(name, prefix, strlen(prefix))
-        && !strchr(name, '~')) {
+  g_print("----- Annotation lists to compare: -----\n");
+
+  while (wfdb_fgets(buf, sizeof(buf), usersfile)) {
+    i = strlen(buf);
+    while (i > 0 && (buf[i - 1] == '\n' || buf[i - 1] == '\r'))
+      buf[--i] = 0;
+
+    if (i > 0) {
+      g_print("  %s\n", buf);
+
+      url = g_string_new(results_url);
+      g_string_append(url, "&user=");
+      g_string_append_uri_escaped(url, buf, NULL, FALSE);
 
       n_reviewers++;
       reviewer_results = g_renew(struct results_list *,
                                  reviewer_results, n_reviewers);
       reviewer_results[n_reviewers - 1] = g_slice_new0(struct results_list);
 
-      read_results_list(reviewer_results[n_reviewers - 1], name);
+      if ((p = strchr(buf, '@')))
+	*p = 0;
+      reviewer_results[n_reviewers - 1]->username = g_strdup(buf);
+
+      read_results_list(reviewer_results[n_reviewers - 1], url->str, NULL);
+
+      g_string_free(url, TRUE);
     }
   }
 
-  g_print("----- Annotation lists to compare: -----\n");
-  for (i = 0; i < n_reviewers; i++)
-    g_print("  %s\n", reviewer_results[i]->filename);
+  wfdb_fclose(usersfile);
   g_print("\n");
-
 
   total1 = total2 = 0;
   for (i = 0; i < n_reviewers; i++) {
-    for (j = 0; j < reviewer_results[i]->n_results; j++) {
-      r1 = &reviewer_results[i]->results[j];
-      if (!r1->status || !r1->status[0])
+    g_hash_table_iter_init(&iter, reviewer_results[i]->results);
+    while (g_hash_table_iter_next(&iter, &key, &val)) {
+      r1 = val;
+      if (!r1 || !r1->status || !r1->status[0])
         continue;
 
       n = 1;
@@ -610,12 +659,17 @@ static void read_reviewer_results()
       else
         total1++;
 
+      rn = find_rec(r1->record);
+      if (rn < 0)
+	continue;
+
       if (conflict) {
+	records[rn].n_conflicts++;
         n_alarms_to_compare++;
         alarms_to_compare = g_renew(struct alarm_pos, alarms_to_compare,
                                     n_alarms_to_compare);
 
-        alarms_to_compare[n_alarms_to_compare - 1].record_index = find_rec(r1->record);
+        alarms_to_compare[n_alarms_to_compare - 1].record_index = rn;
         alarms_to_compare[n_alarms_to_compare - 1].time = r1->time;
       }
     }
@@ -628,7 +682,6 @@ static void read_reviewer_results()
   g_print("Alarms annotated by two or more reviewers: %6d\n", total2);
   g_print("Alarms with conflicting annotations:       %6d\n", n_alarms_to_compare);
   g_print("\n");
-#endif
 }
 
 /**** Reading records/alarms ****/
@@ -657,6 +710,7 @@ static void read_records_list()
   char buf[256];
   int i;
   int n_alarms;
+  GtkTreeIter iter;
 
   listfile = wfdb_fopen(record_list_url, "r");
   if (!listfile) {
@@ -679,10 +733,67 @@ static void read_records_list()
 	n_alarms = G_MAXINT;
       }
       records[n_records - 1].n_alarms = n_alarms;
+      records[n_records - 1].n_conflicts = 0;
     }
   }
 
   wfdb_fclose(listfile);
+
+  if (record_store)
+    g_object_unref(record_store);
+
+  g_assert(REC_N_COLS == 3);
+  record_store = gtk_list_store_new(REC_N_COLS, G_TYPE_STRING,
+				    G_TYPE_STRING,
+				    G_TYPE_STRING);
+  for (i = 0; i < n_records; i++) {
+    gtk_list_store_append(record_store, &iter);
+    g_snprintf(buf, sizeof(buf), "(%d/%d)", i + 1, n_records);
+    gtk_list_store_set(record_store, &iter,
+		       REC_COL_STATUS, "",
+		       REC_COL_NAME, records[i].name,
+		       REC_COL_INDEX, buf,
+		       -1);
+  }
+  gtk_combo_box_set_model(GTK_COMBO_BOX(record_combo),
+			  GTK_TREE_MODEL(record_store));
+}
+
+static void update_rec_status(int index)
+{
+  GtkTreeIter iter;
+  int n;
+
+  if (index < 0 || index >= n_records)
+    return;
+
+  if (!gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(record_store),
+				     &iter, NULL, index))
+    return;
+
+  n = n_results_for_record(&my_results, records[index].name);
+  if (!compare_mode) {
+    if (n == records[index].n_alarms)
+      gtk_list_store_set(record_store, &iter,
+			 REC_COL_STATUS, S_COMPLETE, -1);
+    else if (n > 0)
+      gtk_list_store_set(record_store, &iter,
+			 REC_COL_STATUS, S_PARTIAL, -1);
+    else
+      gtk_list_store_set(record_store, &iter,
+			 REC_COL_STATUS, S_UNSEEN, -1);
+  }
+  else {
+    if (n > 0 && n == records[index].n_conflicts)
+      gtk_list_store_set(record_store, &iter,
+			 REC_COL_STATUS, S_ADJ_DONE, -1);
+    else if (records[index].n_conflicts > 0)
+      gtk_list_store_set(record_store, &iter,
+			 REC_COL_STATUS, S_ADJ_NEEDED, -1);
+    else
+      gtk_list_store_set(record_store, &iter,
+			 REC_COL_STATUS, S_ADJ_UNNEEDED, -1);
+  }
 }
 
 static int try_open_anns(char *recname, const char *annname)
@@ -747,6 +858,7 @@ static void select_alarm(int index)
   const struct result_info *r;
   int statcode = -1, i, c;
   int *sccount;
+  GString **scstr;
 
   cur_alarm = NULL;
   g_return_if_fail(index >= 0);
@@ -757,8 +869,8 @@ static void select_alarm(int index)
   cur_alarm_index = index;
   cur_alarm = &cur_record_alarms[index];
 
-  label_printf(ann_label, "%s", timstr(cur_alarm->time));
-  label_printf(ann_num_label, "(%d/%d)", index + 1, cur_record_n_alarms);
+  /* don't know time until record is loaded */
+
   label_printf(message_label, "<big><b>%s</b></big>", cur_alarm->message);
 
   r = get_result(&my_results, cur_record, cur_alarm->time);
@@ -775,12 +887,22 @@ static void select_alarm(int index)
     c = alarm_has_conflicts(cur_record, cur_alarm->time);
 
     sccount = g_new0(int, n_responses);
+    scstr = g_new0(GString *, n_responses);
 
     for (i = 0; i < n_reviewers; i++) {
       r = get_result(reviewer_results[i], cur_record, cur_alarm->time);
       statcode = result_to_statcode(r);
-      if (statcode >= 0)
+      if (statcode >= 0) {
         sccount[statcode]++;
+
+	if (!scstr[statcode])
+	  scstr[statcode] = g_string_new(NULL);
+	else
+	  g_string_append(scstr[statcode], "\n");
+	g_string_append_printf(scstr[statcode], "[%s]", reviewer_results[i]->username);
+	if (r && r->comment)
+	  g_string_append_printf(scstr[statcode], " %s", r->comment);
+      }
     }
 
     for (i = 0; i < n_responses; i++) {
@@ -788,9 +910,16 @@ static void select_alarm(int index)
         label_printf(alarm_info_label[i], " ");
       else
         label_printf(alarm_info_label[i], " <b>(%d)</b>", sccount[i]);
+
+      gtk_widget_set_tooltip_text(alarm_info_label[i],
+				  scstr[i] ? scstr[i]->str : NULL);
     }
 
     g_free(sccount);
+    for (i = 0; i < n_responses; i++)
+      if (scstr[i])
+	g_string_free(scstr[i], TRUE);
+    g_free(scstr);
 
     for (i = 0; i < n_responses; i++)
       gtk_widget_set_sensitive(alarm_button[i],
@@ -892,8 +1021,11 @@ static void select_record(int index)
     }
   }
 
-  label_printf(record_label, "<small>%s</small>", cur_record);
-  label_printf(record_num_label, "(%d/%d)", index + 1, n_records);
+  gtk_combo_box_set_active(GTK_COMBO_BOX(record_combo), index);
+
+  if (ann_store)
+    g_object_unref(ann_store);
+  ann_store = NULL;
 
   if (cur_record_n_alarms == 0)
     g_printerr("warning: no alarms found in record %s\n",
@@ -902,6 +1034,76 @@ static void select_record(int index)
     select_alarm(0);
 
   wave_view_force_reload();
+}
+
+static void update_ann_status(int index)
+{
+  WFDB_Time t;
+  GtkTreeIter iter;
+  const struct result_info *r;
+  int statcode;
+  const char *status;
+
+  if (index < 0 || index >= cur_record_n_alarms)
+    return;
+
+  if (!gtk_tree_model_iter_nth_child(GTK_TREE_MODEL(ann_store),
+				     &iter, NULL, index))
+    return;
+
+  t = cur_record_alarms[index].time;
+  r = get_result(&my_results, cur_record, t);
+
+  if (!compare_mode) {
+    statcode = result_to_statcode(r);
+    if (statcode == -1)
+      status = S_UNSEEN;
+    else if (responses[statcode].always_adjudicate)
+      status = S_PARTIAL;
+    else if (responses[statcode].comment_required
+	     && (!r->comment || !r->comment[0]))
+      status = S_PARTIAL;
+    else
+      status = S_COMPLETE;
+  }
+  else {
+    if (r && r->status)
+      status = S_ADJ_DONE;
+    else if (alarm_has_conflicts(cur_record, t))
+      status = S_ADJ_NEEDED;
+    else
+      status = S_ADJ_UNNEEDED;
+  }
+
+  gtk_list_store_set(ann_store, &iter, ANN_COL_STATUS, status, -1);
+}
+
+static void build_ann_store()
+{
+  int i;
+  WFDB_Time t;
+  char buf[256];
+  GtkTreeIter iter;
+
+  g_return_if_fail(ann_store == NULL);
+
+  g_assert(ANN_N_COLS == 3);
+  ann_store = gtk_list_store_new(ANN_N_COLS, G_TYPE_STRING,
+				 G_TYPE_STRING,
+				 G_TYPE_STRING);
+  for (i = 0; i < cur_record_n_alarms; i++) {
+    gtk_list_store_append(ann_store, &iter);
+    g_snprintf(buf, sizeof(buf), "(%d/%d)", i + 1, cur_record_n_alarms);
+    t = cur_record_alarms[i].time;
+    gtk_list_store_set(ann_store, &iter,
+		       ANN_COL_STATUS, "",
+		       ANN_COL_TIME, timstr(t),
+		       ANN_COL_INDEX, buf,
+		       -1);
+    update_ann_status(i);
+  }
+  gtk_combo_box_set_model(GTK_COMBO_BOX(ann_combo),
+			  GTK_TREE_MODEL(ann_store));
 }
 
 static void next_alarm()
@@ -1009,6 +1211,12 @@ static void recenter_clicked(G_GNUC_UNUSED GtkButton *btn, G_GNUC_UNUSED gpointe
   g_printerr("Loading record %s...\n", cur_record);
   set_record_and_annotator(cur_record, database_annotator);
 
+  /* build list of annotations, if we haven't previously done so for
+     this record - need to do this after calling isigopen */
+  if (!ann_store)
+    build_ann_store();
+  gtk_combo_box_set_active(GTK_COMBO_BOX(ann_combo), cur_alarm_index);
+
   /* FIXME: until the widget is actually displayed, we don't know what
      nsamp is */
   while (gtk_events_pending())
@@ -1057,6 +1265,24 @@ static void nextcomp_clicked(G_GNUC_UNUSED GtkButton *btn, G_GNUC_UNUSED gpointe
   }
 }
 
+static void record_combo_changed(GtkComboBox *combo, G_GNUC_UNUSED gpointer data)
+{
+  int n = gtk_combo_box_get_active(combo);
+  if (n >= 0 && n != cur_record_index) {
+    select_record(n);
+    recenter_clicked(NULL, NULL);
+  }
+}
+
+static void ann_combo_changed(GtkComboBox *combo, G_GNUC_UNUSED gpointer data)
+{
+  int n = gtk_combo_box_get_active(combo);
+  if (n >= 0 && n != cur_alarm_index) {
+    select_alarm(n);
+    recenter_clicked(NULL, NULL);
+  }
+}
+
 static void accept_input()
 {
   if (compare_mode)
@@ -1067,10 +1293,10 @@ static void accept_input()
 
 static void time_scale_changed(GtkComboBox *combo, G_GNUC_UNUSED gpointer data)
 {
-  int index = gtk_combo_box_get_active(combo);
+  int index = gtk_combo_box_get_active(combo) + min_tsa_index;
   WFDB_Time tcur;
 
-  if (index >= 0 && index != tsa_index) {
+  if (index >= min_tsa_index && index != tsa_index) {
     tcur = display_start_time + 0.75 * nsamp;
     set_time_scale(index);
     show_time_at_pos(tcur, 0.75);
@@ -1091,6 +1317,8 @@ static void set_status(const char *status, const char *substatus)
   g_return_if_fail(cur_alarm != NULL);
   r = put_result(&my_results, cur_record, cur_alarm->time, status, substatus, NULL);
   save_result(&my_results, r);
+  update_ann_status(cur_alarm_index);
+  update_rec_status(cur_record_index);
 }
 
 static void set_comment(const char *comment)
@@ -1098,6 +1326,7 @@ static void set_comment(const char *comment)
   const struct result_info *r;
   g_return_if_fail(cur_alarm != NULL);
   r = put_result(&my_results, cur_record, cur_alarm->time, NULL, NULL, comment);
+  update_ann_status(cur_alarm_index);
 
   if (pending_result && pending_result != r) {
     /* this should never happen! */
@@ -1168,6 +1397,8 @@ static gboolean comment_key_press(GtkWidget *w, GdkEventKey *ev, G_GNUC_UNUSED g
   return FALSE;
 }
 
+/**** Login dialog ****/
+
 static void login_activate(G_GNUC_UNUSED GtkEntry *ent, G_GNUC_UNUSED gpointer data)
 {
   const char *name = gtk_entry_get_text(GTK_ENTRY(user_name_entry));
@@ -1180,6 +1411,51 @@ static void login_activate(G_GNUC_UNUSED GtkEntry *ent, G_GNUC_UNUSED gpointer d
   else
     gtk_window_activate_default(GTK_WINDOW(gtk_widget_get_toplevel(user_name_entry)));
 }
+
+/**** Project dialog ****/
+
+enum {
+  PRJ_COL_URL,
+  PRJ_COL_TITLE,
+  PRJ_COL_STYLE,
+  PRJ_COL_REVIEWER,
+  PRJ_COL_ADJUDICATOR,
+  PRJ_N_COLS
+};
+
+static void project_selection_changed(GtkTreeSelection *sel,
+				      G_GNUC_UNUSED gpointer data)
+{
+  GtkTreeModel *model;
+  GtkTreeIter iter;
+  gboolean allow_r, allow_a;
+
+  if (!gtk_tree_selection_get_selected(sel, &model, &iter))
+    allow_r = allow_a = FALSE;
+  else
+    gtk_tree_model_get(model, &iter,
+		       PRJ_COL_REVIEWER, &allow_r,
+		       PRJ_COL_ADJUDICATOR, &allow_a,
+		       -1);
+
+  gtk_widget_set_sensitive(project_mode_box, (allow_r && allow_a));
+  if (allow_a && !allow_r)
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(project_adjudicator_button), TRUE);
+  else if (allow_r && !allow_a)
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(project_reviewer_button), TRUE);
+  gtk_dialog_set_response_sensitive(GTK_DIALOG(project_dialog),
+				    1, (allow_r || allow_a));
+}
+
+static void project_activate(G_GNUC_UNUSED GtkTreeView *tree_view,
+			     G_GNUC_UNUSED GtkTreePath *path,
+			     G_GNUC_UNUSED GtkTreeViewColumn *column,
+			     G_GNUC_UNUSED gpointer data)
+{
+  gtk_window_activate_default(GTK_WINDOW(project_dialog));
+}
+
+/**** Main program ****/
 
 static char * get_file_contents(const char *filename)
 {
@@ -1250,10 +1526,20 @@ int main(int argc, char **argv)
   GError *err = NULL;
   int i;
   const char *version_req, *options_fname, *msg, *geomstr, *path,
-    *user_cache_dir;
-  char *results_list_url, *results_post_url, *options_xml,
-    *orig_working_dir, *cache_dir, *name;
+    *user_cache_dir, *username, *password, *old_project, *old_role;
+  struct project_list *project_list;
+  char *rvr_list_url, *rvr_post_url, *adj_users_url,
+    *adj_results_url, *adj_list_url, *adj_post_url,
+    *options_xml, *orig_working_dir, *cache_dir, *name;
+  char *project_url = NULL;
   char geom[50];
+  GtkTreeModel *model;
+  GtkListStore *store;
+  GtkTreeIter iter;
+  GtkTreeViewColumn *col;
+  GtkCellRenderer *cell;
+  GtkTreeSelection *sel;
+  GtkTreePath *sel_path;
 
   gtk_init(&argc, &argv);
 
@@ -1290,9 +1576,10 @@ int main(int argc, char **argv)
   gtk_entry_set_text(GTK_ENTRY(password_entry),
 		     defaults_get_string("", "Project.Password", ""));
 
-  while (!config_log_in(GTK_WINDOW(user_name_dialog),
-			gtk_entry_get_text(GTK_ENTRY(user_name_entry)),
-			gtk_entry_get_text(GTK_ENTRY(password_entry)))) {
+  username = NULL;
+  password = NULL;
+  while (!(project_list = get_project_list(GTK_WINDOW(user_name_dialog),
+					   username, password))) {
 
     if (g_strcmp0(gtk_entry_get_text(GTK_ENTRY(user_name_entry)), ""))
       gtk_widget_grab_focus(password_entry);
@@ -1303,11 +1590,14 @@ int main(int argc, char **argv)
     if (gtk_dialog_run(GTK_DIALOG(user_name_dialog)) != 1)
       /* cancel button clicked */
       return 1;
-  } 
+
+    username = gtk_entry_get_text(GTK_ENTRY(user_name_entry));
+    password = gtk_entry_get_text(GTK_ENTRY(password_entry));
+  }
 
   /* save username in user.conf */
-  defaults_set_string("", "Project.UserName",
-		      gtk_entry_get_text(GTK_ENTRY(user_name_entry)));
+  if (username)
+    defaults_set_string("", "Project.UserName", username);
 
   /* make dialog appear insensitive but don't hide it so user knows
      the program is still running... a real progress dialog would be
@@ -1315,6 +1605,128 @@ int main(int argc, char **argv)
   gtk_widget_set_sensitive(user_name_dialog, FALSE);
   while (gtk_events_pending())
     gtk_main_iteration();
+
+
+  /**** Select a project ****/
+
+  project_dialog             = getobj(builder1, "project_dialog");
+  project_tree_view          = getobj(builder1, "project_tree_view");
+  project_mode_box           = getobj(builder1, "project_mode_box");
+  project_reviewer_button    = getobj(builder1, "project_reviewer_button");
+  project_adjudicator_button = getobj(builder1, "project_adjudicator_button");
+
+  if (!project_list[0].title) {
+    /* hard-coded project URL */
+
+    if (!load_project(GTK_WINDOW(user_name_dialog), project_list[0].url))
+      return 1;
+
+    gtk_widget_hide(user_name_dialog);
+  }
+  else {
+    /* list of projects from server - let user choose one */
+
+    gtk_dialog_set_alternative_button_order(GTK_DIALOG(project_dialog),
+					    1, 2, -1);
+
+    g_assert(PRJ_N_COLS == 5);
+    store = gtk_list_store_new(PRJ_N_COLS, G_TYPE_STRING,
+			       G_TYPE_STRING, PANGO_TYPE_STYLE,
+			       G_TYPE_BOOLEAN, G_TYPE_BOOLEAN);
+
+    col = gtk_tree_view_column_new();
+    gtk_tree_view_column_set_sizing(col, GTK_TREE_VIEW_COLUMN_FIXED);
+    gtk_tree_view_column_set_expand(col, TRUE);
+
+    cell = gtk_cell_renderer_text_new();
+    gtk_tree_view_column_pack_start(col, cell, TRUE);
+    g_object_set(cell, "ellipsize", PANGO_ELLIPSIZE_END, NULL);
+    gtk_tree_view_column_set_attributes
+      (col, cell, "text", PRJ_COL_TITLE, "style", PRJ_COL_STYLE, NULL);
+
+    gtk_tree_view_append_column(GTK_TREE_VIEW(project_tree_view), col);
+    gtk_tree_view_set_search_column(GTK_TREE_VIEW(project_tree_view), PRJ_COL_TITLE);
+
+    old_role = defaults_get_string("", "Project.SelectedRole", "reviewer");
+    if (!g_strcmp0(old_role, "adjudicator"))
+      gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(project_adjudicator_button), TRUE);
+
+    old_project = defaults_get_string("", "Project.SelectedConfig", NULL);
+    sel_path = NULL;
+
+    for (i = 0; project_list && project_list[i].url; i++) {
+      gtk_list_store_append(store, &iter);
+
+      if (project_list[i].reviewer || project_list[i].adjudicator) {
+	gtk_list_store_set(store, &iter,
+			   PRJ_COL_URL, project_list[i].url,
+			   PRJ_COL_TITLE, project_list[i].title,
+			   PRJ_COL_STYLE, PANGO_STYLE_NORMAL,
+			   PRJ_COL_REVIEWER, project_list[i].reviewer,
+			   PRJ_COL_ADJUDICATOR, project_list[i].adjudicator,
+			   -1);
+      }
+      else {
+	name = g_strdup_printf("[%s]", project_list[i].title);
+	gtk_list_store_set(store, &iter,
+			   PRJ_COL_URL, project_list[i].url,
+			   PRJ_COL_TITLE, name,
+			   PRJ_COL_STYLE, PANGO_STYLE_ITALIC,
+			   PRJ_COL_REVIEWER, FALSE,
+			   PRJ_COL_ADJUDICATOR, FALSE,
+			   -1);
+	g_free(name);
+      }
+
+      if (!sel_path && !g_strcmp0(old_project, project_list[i].url))
+	sel_path = gtk_tree_model_get_path(GTK_TREE_MODEL(store), &iter);
+    }
+
+    gtk_tree_view_set_model(GTK_TREE_VIEW(project_tree_view), GTK_TREE_MODEL(store));
+    sel = gtk_tree_view_get_selection(GTK_TREE_VIEW(project_tree_view));
+
+    if (sel_path)
+      gtk_tree_selection_select_path(sel, sel_path);
+
+    g_signal_connect(sel, "changed",
+		     G_CALLBACK(project_selection_changed), NULL);
+    project_selection_changed(sel, NULL);
+
+    g_signal_connect(project_tree_view, "row-activated",
+		     G_CALLBACK(project_activate), NULL);
+
+    gtk_widget_hide(user_name_dialog);
+
+    do {
+      gtk_widget_grab_focus(project_tree_view);
+      gtk_window_present(GTK_WINDOW(project_dialog));
+      if (gtk_dialog_run(GTK_DIALOG(project_dialog)) != 1)
+	/* cancel button clicked */
+	return 1;
+
+      g_free(project_url);
+      project_url = NULL;
+      if (gtk_tree_selection_get_selected(sel, &model, &iter))
+	gtk_tree_model_get(model, &iter, PRJ_COL_URL, &project_url, -1);
+
+    } while (!project_url
+	     || !load_project(GTK_WINDOW(project_dialog), project_url));
+
+    /* save project URL in user.conf */
+    defaults_set_string("", "Project.SelectedConfig", project_url);
+
+    compare_mode = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(project_adjudicator_button));
+
+    defaults_set_string("", "Project.SelectedRole",
+			compare_mode ? "adjudicator" : "reviewer");
+
+    gtk_widget_set_sensitive(project_dialog, FALSE);
+    while (gtk_events_pending())
+      gtk_main_iteration();
+  }
+
+  free_project_list(project_list);
+
 
   /**** Load project configuration ****/
 
@@ -1339,8 +1751,13 @@ int main(int argc, char **argv)
   target_chan = defaults_get_integer("", "Database.AnnotationChan", TARGET_ANY);
   target_aux = g_strdup(defaults_get_string("", "Database.AnnotationAux", ""));
 
-  results_list_url = g_strdup(defaults_get_string("", "Reviewer.List", ""));
-  results_post_url = g_strdup(defaults_get_string("", "Reviewer.Post", ""));
+  rvr_list_url = g_strdup(defaults_get_string("", "Reviewer.List", ""));
+  rvr_post_url = g_strdup(defaults_get_string("", "Reviewer.Post", ""));
+
+  adj_users_url = g_strdup(defaults_get_string("", "Adjudicator.Users", ""));
+  adj_results_url = g_strdup(defaults_get_string("", "Adjudicator.Results", ""));
+  adj_list_url = g_strdup(defaults_get_string("", "Adjudicator.List", ""));
+  adj_post_url = g_strdup(defaults_get_string("", "Adjudicator.Post", ""));
 
   /* ugh, need to do this before calling isigopen (or other high-level
      wfdb funcs) for the first time */
@@ -1407,10 +1824,8 @@ int main(int argc, char **argv)
   /* defined in metaann.ui */
   window                = getobj(builder1, "window");
   main_box              = getobj(builder1, "main_box");
-  record_label          = getobj(builder1, "record_label");
-  record_num_label      = getobj(builder1, "record_num_label");
-  ann_label             = getobj(builder1, "ann_label");
-  ann_num_label         = getobj(builder1, "ann_num_label");
+  record_combo          = getobj(builder1, "record_combo");
+  ann_combo             = getobj(builder1, "ann_combo");
   message_label         = getobj(builder1, "message_label");
   time_scale_combo      = getobj(builder1, "time_scale_combo");
   ampl_scale_combo      = getobj(builder1, "ampl_scale_combo");
@@ -1419,6 +1834,43 @@ int main(int argc, char **argv)
   recenter_button       = getobj(builder1, "recenter_button");
   prevcomp_button       = getobj(builder1, "prevcomp_button");
   nextcomp_button       = getobj(builder1, "nextcomp_button");
+
+  min_tsa_index = defaults_get_integer("", "Wave.View.MinTimeScale", 8);
+  model = gtk_combo_box_get_model(GTK_COMBO_BOX(time_scale_combo));
+  for (i = 0; i < min_tsa_index; i++) {
+    gtk_tree_model_get_iter_first(model, &iter);
+    gtk_list_store_remove(GTK_LIST_STORE(model), &iter);
+  }
+
+  cell = gtk_cell_renderer_text_new();
+  g_object_set(cell, "width-chars", 1, NULL);
+  gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(record_combo), cell, FALSE);
+  gtk_cell_layout_set_attributes
+    (GTK_CELL_LAYOUT(record_combo), cell, "text", REC_COL_STATUS, NULL);
+  cell = gtk_cell_renderer_text_new();
+  g_object_set(cell, "scale", 0.75, NULL);
+  gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(record_combo), cell, TRUE);
+  gtk_cell_layout_set_attributes
+    (GTK_CELL_LAYOUT(record_combo), cell, "text", REC_COL_NAME, NULL);
+  cell = gtk_cell_renderer_text_new();
+  gtk_cell_layout_pack_end(GTK_CELL_LAYOUT(record_combo), cell, FALSE);
+  gtk_cell_layout_set_attributes
+    (GTK_CELL_LAYOUT(record_combo), cell, "text", REC_COL_INDEX, NULL);
+
+  cell = gtk_cell_renderer_text_new();
+  g_object_set(cell, "width-chars", 1, NULL);
+  gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(ann_combo), cell, FALSE);
+  gtk_cell_layout_set_attributes
+    (GTK_CELL_LAYOUT(ann_combo), cell, "text", ANN_COL_STATUS, NULL);
+  cell = gtk_cell_renderer_text_new();
+  gtk_cell_layout_pack_start(GTK_CELL_LAYOUT(ann_combo), cell, TRUE);
+  gtk_cell_layout_set_attributes
+    (GTK_CELL_LAYOUT(ann_combo), cell, "text", ANN_COL_TIME, NULL);
+  cell = gtk_cell_renderer_text_new();
+  gtk_cell_layout_pack_end(GTK_CELL_LAYOUT(ann_combo), cell, FALSE);
+  gtk_cell_layout_set_attributes
+    (GTK_CELL_LAYOUT(ann_combo), cell, "text", ANN_COL_INDEX, NULL);
+
 
   /* defined in options.ui */
   options_box           = getobj(builder2, "options_box");
@@ -1456,13 +1908,12 @@ int main(int argc, char **argv)
     g_signal_connect(comment_entry, "activate", G_CALLBACK(comment_activate), NULL);
   }
 
+  g_signal_connect(record_combo, "changed", G_CALLBACK(record_combo_changed), NULL);
+  g_signal_connect(ann_combo, "changed", G_CALLBACK(ann_combo_changed), NULL);
+
   gtk_widget_grab_focus(recenter_button);
 
   comp_buttons = getobj(builder1, "comp_buttons");
-  if (compare_mode)
-    gtk_widget_show(comp_buttons);
-  else
-    gtk_widget_hide(comp_buttons);
 
   g_object_unref(builder1);
   g_object_unref(builder2);
@@ -1471,25 +1922,25 @@ int main(int argc, char **argv)
   /**** Read list of records and annotations so far ****/
 
   read_records_list();
-  read_results_list(&my_results, results_list_url, results_post_url);
-  if (compare_mode)
-    read_reviewer_results();
 
-  /* skip over fully-annotated records */
-  for (i = 0; i < n_records - 1; i++)
-    if (n_results_for_record(&my_results, records[i].name) != records[i].n_alarms)
-      break;
+  if (compare_mode) {
+    read_reviewer_results(adj_users_url, adj_results_url);
+    read_results_list(&my_results, adj_list_url, adj_post_url);
+  }
+  else {
+    read_results_list(&my_results, rvr_list_url, rvr_post_url);
+  }
 
-  select_record(i);
-
-  /* skip over empty records */
-  while (cur_record_n_alarms < 1 && cur_record_index + 1 < n_records)
-    select_record(cur_record_index + 1);
+  for (i = 0; i < n_records; i++)
+    update_rec_status(i);
 
   if (compare_mode) {
     if (n_alarms_to_compare > 0) {
       select_record(alarms_to_compare[0].record_index);
       select_alarm_at_time(alarms_to_compare[0].time);
+    }
+    else {
+      select_record(0);
     }
 
     while (!at_last_to_compare()
@@ -1498,12 +1949,24 @@ int main(int argc, char **argv)
     }
   }
   else {
+    /* skip over fully-annotated records */
+    for (i = 0; i < n_records - 1; i++)
+      if (n_results_for_record(&my_results, records[i].name) != records[i].n_alarms)
+	break;
+
+    select_record(i);
+
     /* skip over already-annotated alarms */
     while (!at_last_alarm()
            && (check_annotated(&my_results, cur_record, cur_alarm->time))) {
       next_alarm();
     }
   }
+
+  if (compare_mode)
+    gtk_widget_show(comp_buttons);
+  else
+    gtk_widget_hide(comp_buttons);
 
   /**** Create wave window ****/
 
@@ -1519,9 +1982,10 @@ int main(int argc, char **argv)
   recenter_clicked(NULL, NULL);
 
   gtk_widget_show_all(window);
-  gtk_widget_hide(user_name_dialog);
+  gtk_widget_hide(project_dialog);
 
-  gtk_combo_box_set_active(GTK_COMBO_BOX(time_scale_combo), tsa_index);
+  gtk_combo_box_set_active(GTK_COMBO_BOX(time_scale_combo),
+			   tsa_index - min_tsa_index);
   gtk_combo_box_set_active(GTK_COMBO_BOX(ampl_scale_combo), vsa_index);
 
   /**** Main loop ****/

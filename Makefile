@@ -29,12 +29,12 @@ objs = metaann.o conf.o url.o annot.o grid.o init.o modepan.o sig.o wave_widget.
 ## Package information
 
 PACKAGE_TARNAME = metaann
-PACKAGE_VERSION = 0.3
+PACKAGE_VERSION = 0.4
 SRCPACKAGE = $(PACKAGE_TARNAME)-$(PACKAGE_VERSION)
 W32PACKAGE = $(PACKAGE_TARNAME)-w32
 
 srcfiles = Makefile *.c *.h
-datafiles = COPYING *.ui metaann.conf default.conf
+datafiles = NEWS COPYING *.ui metaann.conf default.conf
 
 ## W32 binary package information
 

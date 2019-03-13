@@ -338,12 +338,17 @@ long fdl_time;
     for (lp = first_list; lp; lp = lp->next)
 	if (lp->start == fdl_time && lp->npoints == nsamp) return (lp);
 
-    /* Give up if a display list can't be allocated, or if we can't skip
-       to the requested segment, or if we can't read at least one sample. */
-    if ((lp = get_display_list()) == NULL ||
-	(fdl_time != strtim("i") && isigsettime(fdl_time) < 0) ||
+    /* Give up if we can't skip to the requested segment, or if we
+       can't read at least one sample. */
+    if ((fdl_time != strtim("i") && isigsettime(fdl_time) < 0) ||
 	getvec(v0) < 0)
 	    return (NULL);
+
+    /* Allocate a new display list; give up if we can't do so.  Note
+       that once the structure has been allocated, we must fill it in
+       with valid data. */
+    if ((lp = get_display_list()) == NULL)
+	return (NULL);
 
     /* Record the starting time. */
     lp->start = fdl_time;

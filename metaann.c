@@ -41,6 +41,7 @@ static char *database_path;	 /* WFDB path */
 static char *database_annotator; /* Name of annotator */
 static char *database_calfile;	 /* Name of calibration file */
 static char *record_list_url;	 /* File containing list of records */
+static double ann_freq = 0.0;	 /* Annotation tick frequency */
 static int target_anntyp = TARGET_ANY; /* ANNTYP of interest */
 static int target_subtyp = TARGET_ANY; /* SUBTYP of interest */
 static int target_num = TARGET_ANY;    /* NUM of interest */
@@ -53,6 +54,8 @@ static int cache_enabled;
 
 struct alarm_info {
   char *message;
+  /* Alarm time is measured in units of ann_freq, or record frame
+     frequency if ann_freq is unset. */
   WFDB_Time time;
 };
 
@@ -73,6 +76,7 @@ static struct record_info *records;
 static int cur_record_index;
 static char *cur_record;
 
+static double cur_record_afreq;
 static int cur_record_n_alarms;
 static struct alarm_info *cur_record_alarms;
 static int cur_alarm_index;
@@ -953,9 +957,9 @@ static int is_target_annotation(const WFDB_Annotation *ann)
     return 0;
   if (target_subtyp != TARGET_ANY && target_subtyp != ann->subtyp)
     return 0;
-  if (target_num != TARGET_ANY && target_subtyp != ann->num)
+  if (target_num != TARGET_ANY && target_num != ann->num)
     return 0;
-  if (target_chan != TARGET_ANY && target_subtyp != ann->chan)
+  if (target_chan != TARGET_ANY && target_chan != ann->chan)
     return 0;
   if (target_aux && target_aux[0]) {
     if (!ann->aux)
@@ -983,14 +987,19 @@ static void select_record(int index)
   wfdbquit();
   setwfdb(database_path);
 
-  /*
-  nsig = isigopen(cur_record, 0, 0);
-  if (nsig < 0) {
+  i = isigopen(cur_record, 0, 0);
+  if (i < 0) {
     show_message(GTK_MESSAGE_ERROR, "Cannot read record",
 		 "%s", wfdberror());
     exit(1);
   }
-  */
+
+  setgvmode(WFDB_LOWRES);
+  if (ann_freq > 0)
+    cur_record_afreq = ann_freq;
+  else
+    cur_record_afreq = sampfreq(NULL);
+  setgvmode(WFDB_HIGHRES);
 
   if (!try_open_anns(cur_record, database_annotator)) {
     show_message(GTK_MESSAGE_ERROR, "Cannot read annotations",
@@ -1005,6 +1014,8 @@ static void select_record(int index)
   cur_record_n_alarms = 0;
 
   g_printerr("reading alarms for %s...\n", cur_record);
+
+  setiafreq(0, cur_record_afreq);
 
   while (0 <= getann(0, &ann)) {
     if (is_target_annotation(&ann)) {
@@ -1094,7 +1105,7 @@ static void build_ann_store()
   for (i = 0; i < cur_record_n_alarms; i++) {
     gtk_list_store_append(ann_store, &iter);
     g_snprintf(buf, sizeof(buf), "(%d/%d)", i + 1, cur_record_n_alarms);
-    t = cur_record_alarms[i].time;
+    t = cur_record_alarms[i].time * getifreq() / cur_record_afreq;
     gtk_list_store_set(ann_store, &iter,
 		       ANN_COL_STATUS, "",
 		       ANN_COL_TIME, timstr(t),
@@ -1222,7 +1233,7 @@ static void recenter_clicked(G_GNUC_UNUSED GtkButton *btn, G_GNUC_UNUSED gpointe
   while (gtk_events_pending())
     gtk_main_iteration();
 
-  show_time_at_pos(cur_alarm->time, 0.75);
+  show_time_at_pos(cur_alarm->time * getifreq() / cur_record_afreq, 0.75);
 }
 
 static void prev_clicked(G_GNUC_UNUSED GtkButton *btn, G_GNUC_UNUSED gpointer data)
@@ -1745,6 +1756,7 @@ int main(int argc, char **argv)
   database_calfile = g_strdup(defaults_get_string("", "Database.DBCalFile", ""));
   database_annotator = g_strdup(defaults_get_string("", "Database.Annotator", ""));
   record_list_url = g_strdup(defaults_get_string("", "Database.RecordList", ""));
+  ann_freq = defaults_get_double("", "Database.AnnotationResolution", 0.0);
   target_anntyp = defaults_get_integer("", "Database.AnnotationType", TARGET_ANY);
   target_subtyp = defaults_get_integer("", "Database.AnnotationSubtype", TARGET_ANY);
   target_num = defaults_get_integer("", "Database.AnnotationNum", TARGET_ANY);

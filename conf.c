@@ -394,6 +394,40 @@ int defaults_get_boolean(G_GNUC_UNUSED const char *name,
     return value;
 }
 
+double defaults_get_double(G_GNUC_UNUSED const char *name,
+			   const char *classname,
+			   double ddefault)
+{
+    char *group, *key;
+    GError *err = NULL;
+    double value;
+
+    load_config(NULL);
+
+    /*printf("[DEF] %s = %g\n", classname, ddefault);*/
+
+    key = strchr(classname, '.');
+    g_return_val_if_fail(key != NULL, ddefault);
+    group = g_strndup(classname, key - classname);
+    key++;
+
+    value = g_key_file_get_double(user_config, group, key, &err);
+    if (err) {
+	g_clear_error(&err);
+	value = g_key_file_get_double(project_config, group, key, &err);
+    }
+    if (err) {
+	g_clear_error(&err);
+	value = g_key_file_get_double(package_config, group, key, &err);
+    }
+    if (err) {
+	g_clear_error(&err);
+	value = ddefault;
+    }
+    g_free(group);
+    return value;
+}
+
 gboolean defaults_set_string(G_GNUC_UNUSED const char *name,
 			     const char *classname,
 			     const char *value)

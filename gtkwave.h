@@ -115,6 +115,7 @@ const char * defaults_get_string(const char *name, const char *classname,
 				 const char *ddefault);
 int defaults_get_integer(const char *name, const char *classname, int ddefault);
 int defaults_get_boolean(const char *name, const char *classname, int ddefault);
+double defaults_get_double(const char *name, const char *classname, double ddefault);
 
 void set_grid_mode(int mode);
 void set_sig_mode(int mode);

@@ -29,7 +29,7 @@ objs = metaann.o conf.o url.o annot.o grid.o init.o modepan.o sig.o wave_widget.
 ## Package information
 
 PACKAGE_TARNAME = metaann
-PACKAGE_VERSION = 0.4
+PACKAGE_VERSION = 0.5
 SRCPACKAGE = $(PACKAGE_TARNAME)-$(PACKAGE_VERSION)
 W32PACKAGE = $(PACKAGE_TARNAME)-w32
 

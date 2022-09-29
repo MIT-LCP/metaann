@@ -1,0 +1,779 @@
+#!/usr/bin/perl -wT
+
+use strict;
+use CGI;
+use Encode;
+
+$ENV{PATH} = '/usr/local/bin:/usr/bin:/bin';
+
+my $q = CGI->new;
+
+my $ROSTERS  = '/data1/pnw/admin/rosters';
+my $PROJECTS = '/data1/pnw/html/works';
+my $USERS    = '/data1/pnw/html/users';
+
+my $PHYSIOBANK = 'http://physionet.org/physiobank/database';
+
+my $user;
+my $project_name;
+my $subproject_name;
+my $project_dir;
+my $project_url;
+my $project_ma_url;
+my $authorized = 0;
+
+my $self = $q->url();
+
+my $action = $q->url_param('a') // '';
+
+################################################################
+
+sub check_authorized {
+  my $prj = shift;
+  if (open ROSTER, '<', "$ROSTERS/$prj") {
+    while (<ROSTER>) {
+      if (/^(?:Owner:|Collaborator:).*\s\Q$user\E\s/) {
+        close ROSTER;
+        return 1;
+      }
+    }
+    close ROSTER;
+  }
+  return 0;
+}
+
+sub get_project_title {
+  my $prjdir = shift;
+  if (open INDEX, '<:encoding(utf8)', "$prjdir/index.shtml") {
+    while (<INDEX>) {
+      if (/<!--#set var="TITLE" value="((?:[^[:cntrl:]\\"\$]++|\\[^[:cntrl:]])++)"-->/) {
+        my $t = $1;
+        $t =~ s/\\(.)/$1/g;
+        close INDEX;
+        return $t;
+      }
+    }
+    close INDEX;
+  }
+  return "[unknown title]";
+}
+
+sub print_header {
+  my $title="PhysioNetWorks ($user)";
+  if ($_[0]) { $title = $_[0]; }
+  print $q->header(-charset=>'utf-8');
+  print_file("/users/shared/doctype.html");
+  print "<title>$title</title>\n";
+  print '<script src="/users/shared/sorttable.js"></script>';
+  print_file("/users/shared/head0.cgi");
+  print_file("/users/shared/menu.cgi");
+  print_file("/users/shared/head2.cgi");
+  print "<h1>$title</h1><div style=\"margin: 0.5em 1em;\">";
+}
+
+sub print_file {
+  if (open(FILE, $_[0])) {
+    while (<FILE>) {
+      print $_;
+    }
+    close(FILE);
+  }
+}
+
+sub send_file {
+  my $filename = shift;
+
+  my ($dev,$ino,$mode,$nlink,$uid,$gid,$rdev,$size,
+      $atime,$mtime,$ctime,$blksize,$blocks) = stat($filename);
+
+  if (!open F, '<:encoding(utf8)', $filename) {
+    print $q->header('text/plain', '500 Internal Server Error');
+    print "Error reading $filename\n";
+    exit 0;
+  }
+
+  binmode STDOUT, ':utf8';
+  print $q->header(-type => 'text/plain;charset=UTF-8',
+                   -Content_Length => $size);
+  while (<F>) {
+    print $_;
+  }
+  close F;
+  exit 0;
+}
+
+sub send_file_substvars {
+  my $filename = shift;
+
+  if (!open F, '<:encoding(utf8)', $filename) {
+    print $q->header('text/plain', '500 Internal Server Error');
+    print "Error reading $filename\n";
+    exit 0;
+  }
+
+  binmode STDOUT, ':utf8';
+  print $q->header(-type => 'text/plain;charset=UTF-8');
+  while (<F>) {
+    if (!/^#/) {
+      s/\@MASERVER\@/$self/g;
+      s/\@PROJECT\@/$project_url/g;
+      s/\@PROJECT_SERVER\@/$project_ma_url/g;
+      s/\@PHYSIOBANK\@/$PHYSIOBANK/g;
+    }
+    print $_;
+  }
+  close F;
+  exit 0;
+}
+
+sub check_allowed_roles {
+  my $conffile = shift;
+  my $roles = '';
+  if (open F, '<', $conffile) {
+    while (<F>) {
+      if (/^\[Reviewer\]/) {
+        $roles .= 'r';
+      }
+      if (/^\[Adjudicator\]/) {
+        $roles .= 'a';
+      }
+    }
+    close F;
+  }
+  return $roles;
+}
+
+sub scan_project {
+  my ($prj, $prjdir, $is_private) = @_;
+  my $pid = ($is_private ? "private_project" : "project") . "=$prj";
+  my $ptitle = ($is_private ? "~$user/" : "") . get_project_title($prjdir);
+
+  if (! -d "$prjdir/files/.metaann") {
+    return ();
+  }
+  if (!$is_private && !check_authorized($prj)) {
+    return ({ id => $pid, auth => 0, title => $ptitle });
+  }
+
+  my @subdirs = ('.');
+  if (opendir D, "$prjdir/files/.metaann") {
+    while ($_ = readdir D) {
+      if (/^([[:alnum:]]+)$/) {
+        push @subdirs, $_;
+      }
+    }
+    closedir D;
+  }
+
+  my @subprj;
+  foreach my $s (@subdirs) {
+    my $id = ($s eq '.' ? $pid : "$pid&sub=$s");
+    my $title = ($s eq '.' ? $ptitle : "$ptitle/$s");
+    my $conffile = "$prjdir/files/.metaann/$s/project.conf";
+    if (-f $conffile) {
+      push @subprj, { id => $id,
+                      auth => "1" . check_allowed_roles($conffile),
+                      title => $title };
+    }
+  }
+
+  return (@subprj);
+}
+
+sub get_project_list {
+  my @projects = ();
+
+  if (opendir PUB, $PROJECTS) {
+    while ($_ = readdir PUB) {
+      if (/^([[:alnum:]]+)$/) {
+        my @subprj = scan_project($1, "$PROJECTS/$1", 0);
+        push @projects, @subprj;
+      }
+    }
+  }
+
+  # Private projects
+
+  if (opendir USER, "$USERS/$user/works") {
+    while ($_ = readdir USER) {
+      if (/^([[:alnum:]]+)$/) {
+        my @subprj = scan_project($1, "$USERS/$user/works/$1", 1);
+        push @projects, @subprj;
+      }
+    }
+  }
+
+  return (sort { $a->{title} cmp $b->{title} } @projects);
+}
+
+sub get_user_list {
+  my $madata = shift;
+  my $ftype = shift;
+  my @users;
+
+  if (opendir DIR, $madata) {
+    binmode STDOUT, ':utf8';
+    while ($_ = readdir DIR) {
+      if (/^$ftype\.(.*[^~])$/s) {
+        push @users, $1;
+      }
+    }
+    closedir DIR;
+  }
+
+  @users = sort { $a cmp $b } @users;
+  return @users;
+}
+
+sub parse_config_file {
+  my $filename = shift;
+  my $taint = `true`;
+  my %escapes = ( 's' => " ", 'n' => "\n", 't' => "\t", 'r' => "\r" );
+
+  my %groups;
+  my $g;
+  if (open CONF, '<:encoding(utf8)', $filename) {
+    while (<CONF>) {
+      if (/^\[([^\[\]]+)\]\s*$/) {
+        $g = $1;
+      }
+      elsif (/^\[/) {
+        $g = undef;
+      }
+      elsif (/^([A-Za-z0-9-.]+)\s*=\s*(.*?)\s*$/ && defined $g) {
+        my $k = $1;
+        my $v = $2;
+        $v =~ s{\\(.)}{$escapes{$1} // $1}eg;
+        $v .= $taint;
+        $groups{$g}->{$k} = $v;
+      }
+    }
+    close CONF;
+  }
+  return (%groups);
+}
+
+################################################################
+
+## Check for a valid user name (email address) ##
+
+if ($q->remote_user() =~ /^(\w(?:\w|\.|\-)*\@(?:(?:\w|\-)+\.)+[a-zA-Z]{2,})$/) {
+  $user = $1;
+}
+else {
+  print $q->header('text/plain', '403 Forbidden');
+  exit 0;
+}
+
+## Show list of projects, if requested ##
+
+if ($action eq '') {
+
+  ## Run with no parameters for an HTML list of projects
+
+  binmode STDOUT, ':UTF8';
+  print_header("PhysioNetWorks Annotation Projects");
+
+  my @info = get_project_list();
+  foreach my $p (@info) {
+    print "<p>";
+    print $q->escapeHTML($p->{title});
+    if ($p->{auth} =~ /^1/) {
+      my $id = $p->{id};
+      my $rself = $q->url(-relative => 1);
+      print " ", $q->a({-href => "$rself?$id&a=status"}, "[status]");
+      print " ", $q->a({-href => "maadmin?$id"}, "[admin]");
+    }
+    else {
+      print " ", $q->i("(Not a member of this project)");
+    }
+    print "</p>\n";
+  }
+
+  print $q->end_html;
+  exit 0;
+}
+elsif ($action eq 'list_projects') {
+
+  ## Usage: ?a=list_projects
+  ##
+  ## Return a list of projects, containing 3 tab-separated columns:
+  ##  - configuration URL for the project;
+  ##  - "0" or "1" according to whether user is authorized;
+  ##  - project title.
+
+  binmode STDOUT, ':utf8';
+  print $q->header('text/plain;charset=UTF-8');
+
+  my @info = get_project_list();
+  foreach my $p (@info) {
+    print "$self?$p->{id}&a=conf", "\t", $p->{auth}, "\t", $p->{title}, "\n";
+  }
+  exit 0;
+}
+
+## Check for a valid project name ##
+
+if (($q->url_param('project') // '') =~ /^([[:alnum:]]+)$/) {
+  ## Public project
+  $project_name = $1;
+  $project_dir = "$PROJECTS/$project_name";
+  $project_url = $q->url(-base => 1) . "/works/$project_name";
+  $project_ma_url = $self . "?project=$project_name";
+  $authorized = check_authorized($project_name);
+}
+elsif (($q->url_param('private_project') // '') =~ /^([[:alnum:]]+)$/) {
+  ## Private project
+  $project_name = $1;
+  $project_dir = "$USERS/$user/works/$project_name";
+  $project_url = $q->url(-base => 1) . "/users/$user/works/$project_name";
+  $project_ma_url = $self . "?private_project=$project_name";
+  if (-e $project_dir) {
+    $authorized = 1;
+  }
+}
+else {
+  print $q->header('text/plain', '400 Bad Request');
+  print "No project name provided\n";
+  exit 0;
+}
+
+if (($q->url_param('sub') // '') =~ /^([[:alnum:]]+)$/) {
+  $subproject_name = $1;
+  $project_ma_url .= "&sub=$subproject_name";
+}
+
+## Check if user is authorized to access this project
+
+if (!$authorized) {
+  print $q->header('text/plain', '403 Forbidden');
+  print "Not a member of this project\n";
+  exit 0;
+}
+
+## Check if project includes a metaann database
+
+my $madata = "$project_dir/files/.metaann";
+if (defined $subproject_name) {
+  $madata .= "/$subproject_name";
+}
+my $conffile = "$madata/project.conf";
+my $gtkuifile = "$madata/options.ui";
+my $dbcalfile = "$madata/dbcal";
+my $recfile = "$madata/records";
+my $userrecfile = "$madata/records.$user";
+my $annfile = "$madata/ann.$user";
+my $adjfile = "$madata/adj.$user";
+
+if (! -w $madata or ! -f $recfile) {
+  print $q->header('text/plain', '404 Not Found');
+  print "Annotations are not enabled for this project\n";
+  exit 0;
+}
+
+################
+
+if ($action eq 'conf') {
+
+  ## Usage: ?project=PRJ&a=conf
+  ##
+  ## Return contents of 'project.conf' (project-specific client
+  ## settings.)
+
+  send_file_substvars($conffile);
+}
+elsif ($action eq 'gtkui') {
+
+  ## Usage: ?project=PRJ&a=gtkui
+  ##
+  ## Return contents of 'options.ui' (project-specific user interface
+  ## definitions.)
+
+  send_file($gtkuifile);
+}
+elsif ($action eq 'dbcal') {
+
+  ## Usage: ?project=PRJ&a=dbcal
+  ##
+  ## Return contents of 'dbcal' (project-specific signal display
+  ## settings.)
+
+  send_file($dbcalfile);
+}
+elsif ($action eq 'records') {
+
+  ## Usage: ?project=PRJ&a=records
+  ##
+  ## Return list of records.  The list is generated in a random order
+  ## for each user.
+
+  if (! -e $userrecfile) {
+    system "sort -R $recfile > $userrecfile";
+  }
+  send_file($userrecfile);
+}
+elsif ($action eq 'annotations') {
+
+  ## Usage: ?project=PRJ&a=annotations
+  ##
+  ## Return list of user's annotations so far.
+
+  if (-e $annfile) {
+    send_file($annfile);
+  }
+  else {
+    send_file('/dev/null');
+  }
+}
+elsif ($action eq 'adj-annotations') {
+
+  ## Usage: ?project=PRJ&a=adj-annotations
+  ##
+  ## Return list of user's second-pass annotations so far.
+
+  if (-e $adjfile) {
+    send_file($adjfile);
+  }
+  else {
+    send_file('/dev/null');
+  }
+}
+elsif ($action eq 'submit' || $action eq 'adj-submit') {
+
+  ## Usage: ?project=PRJ&a=submit
+  ##  POST:  record=REC&time=T&status=STR&substatus=STR&comment=STR
+  ##
+  ## Add or modify an annotation.
+
+  if ($q->request_method() ne 'POST') {
+    print $q->header('text/plain', '405 Method Not Allowed');
+    print "Action 'submit' requires POST\n";
+    exit 0;
+  }
+
+  my $record;
+  my $time;
+  my $status = '';
+  my $substatus = '';
+  my $comment = '';
+
+  if (($q->param('record') // '') =~ /^([-_\/A-Za-z0-9]{1,100})$/) {
+    $record = $1;
+  }
+  else {
+    print $q->header('text/plain', '400 Bad Request');
+    print "Invalid record name\n";
+    exit 0;
+  }
+
+  if (($q->param('time') // '') =~ /^(\d{1,50})$/) {
+    $time = $1;
+  }
+  else {
+    print $q->header('text/plain', '400 Bad Request');
+    print "Invalid annotation time\n";
+    exit 0;
+  }
+
+  if (($q->param('status') // '') =~ /^(\w{0,50})$/) {
+    $status = $1;
+  }
+  else {
+    print $q->header('text/plain', '400 Bad Request');
+    print "Invalid status string\n";
+    exit 0;
+  }
+
+  if (($q->param('substatus') // '') =~ /^(\w{0,50})$/) {
+    $substatus = $1;
+  }
+  else {
+    print $q->header('text/plain', '400 Bad Request');
+    print "Invalid substatus string\n";
+    exit 0;
+  }
+
+  if (($q->param('comment') // '') =~ /^(.{0,2000})$/s) {
+    $comment = decode 'utf8', $1;
+    $comment =~ s/[[:cntrl:]]/ /g;
+  }
+  else {
+    print $q->header('text/plain', '400 Bad Request');
+    print "Invalid comment string\n";
+    exit 0;
+  }
+
+  my $af = ($action eq 'adj-submit' ? $adjfile : $annfile);
+  my $newannfile = "$af~new~";
+  my $oldannfile = "$af~";
+
+  my $new_str = "$record\t$time\t$status\t$substatus\t$comment\n";
+
+  if (!open NEWANNS, '>:utf8', $newannfile) {
+    print $q->header('text/plain', '500 Internal Server Error');
+    print "Error recording annotations\n";
+    exit 0;
+  }
+  if (open ANNS, '<:encoding(utf8)', $af) {
+    while (<ANNS>) {
+      if (/^(\S+)\t(\S+)\t/) {
+        if ($1 eq $record and $2 eq $time) {
+          print NEWANNS $new_str;
+          $new_str = '';
+        }
+        else {
+          print NEWANNS $_;
+        }
+      }
+    }
+    close ANNS;
+  }
+  print NEWANNS $new_str;
+  if (!close NEWANNS) {
+    unlink $newannfile;
+    print $q->header('text/plain', '500 Internal Server Error');
+    print "Error recording annotations\n";
+    exit 0;
+  }
+
+  rename $af, $oldannfile;
+  rename $newannfile, $af;
+
+  binmode STDOUT, ':utf8';
+  print $q->header('text/plain;charset=UTF-8');
+  print "$record\t$time\t$status\t$substatus\t$comment\n";
+  exit 0;
+}
+elsif ($action eq 'adj-users') {
+
+  ## Usage: ?project=PRJ&a=adj-users
+  ##
+  ## Return list of users
+
+  print $q->header(-type => 'text/plain;charset=UTF-8');
+  my @users = get_user_list($madata, 'ann');
+  foreach my $u (@users) {
+    print "$u\n";
+  }
+  exit 0;
+}
+elsif ($action eq 'adj-results') {
+
+  ## Usage: ?project=PRJ&a=adj-results&user=USER
+  ##
+  ## Return list of another user's annotations
+
+  my $u;
+  if (($q->url_param('user') // '')
+      =~ /^(\w(?:\w|\.|\-)*\@(?:(?:\w|\-)+\.)+[a-zA-Z]{2,})$/) {
+    $u = $1;
+  }
+  else {
+    print $q->header('text/plain', '400 Bad Request');
+    print "Invalid username\n";
+    exit 0;
+  }
+
+  if (-e "$madata/ann.$u") {
+    send_file("$madata/ann.$u");
+  }
+  else {
+    send_file('/dev/null');
+  }
+}
+elsif ($action eq 'status') {
+
+  ## Usage: ?project=PRJ&a=status
+  ##
+  ## Display project statistics
+
+  # Get the list of possible responses
+
+  my %conf = parse_config_file($conffile);
+
+  my %resp;
+  foreach my $k (keys %{$conf{Responses}}) {
+    if ($k =~ /^Response(\d+)(?:\.(.*))?$/) {
+      $resp{$1}->{$2 // 'name'} = $conf{Responses}->{$k};
+    }
+  }
+  my @resp = sort { $a <=> $b } keys %resp;
+  my %rstat;
+  foreach my $n (@resp) {
+    my $name = ($resp{$n}->{name} //= "_r_$n");
+    my $s    = ($resp{$n}->{Status} // "_r_$n");
+    my $ss   = ($resp{$n}->{Substatus} // '');
+    $rstat{$s}->{$ss} = $n;
+  }
+
+  # Get the total number of events expected
+
+  my $total = 0;
+  if (open RECS, '<:encoding(utf8)', $recfile) {
+    while (<RECS>) {
+      if (/^\S+\s+(\d+)/) {
+        $total += $1;
+      }
+    }
+    close RECS;
+  }
+
+  # Read reviewer annotations
+
+  my @reviewers = get_user_list($madata, 'ann');
+  my %events;
+  my %nanns;
+  foreach my $u (@reviewers) {
+    if (open ANNS, "$madata/ann.$u") {
+      while (<ANNS>) {
+        if (/^(\S+)\t(\d+)\t([^\t]*)\t([^\t]*)/) {
+          my ($rec, $time, $s, $ss) = ($1, $2, $3, $4);
+          my $n = $rstat{$s}->{$ss};
+          if (defined $n) {
+            $events{$rec}->{$time}->{$n}++;
+            $nanns{$u}++;
+          }
+        }
+      }
+      close ANNS;
+    }
+  }
+
+  # Get reviewer consensus for all annotated events
+
+  my %consensus;
+  my %needs_adj;
+  foreach my $r (keys %events) {
+    foreach my $t (keys %{$events{$r}}) {
+      my $e = $events{$r}->{$t};
+      my $noadj = 0;
+      my $disagree = 0;
+      my $c_status;
+      my $t_count = 0;
+
+      foreach my $n (keys %$e) {
+        my $status = $resp{$n}->{Status};
+        my $count = $e->{$n};
+        $t_count += $count;
+        if (!defined $c_status) {
+          $c_status = $status;
+        }
+        elsif ($c_status ne $status) {
+          $disagree = 1;
+        }
+        if (($resp{$n}->{NeverAdjudicate} // '') eq 'true') {
+          $noadj = 1;
+        }
+        if (($resp{$n}->{AlwaysAdjudicate} // '') eq 'true') {
+          $disagree = 1;
+        }
+      }
+
+      if ($t_count >= 2) {
+        if ($disagree) {
+          $needs_adj{$r}->{$t} = 1;
+          $consensus{'[disagree]'}++;
+        }
+        elsif ($noadj) {
+          $consensus{'[invalid]'}++;
+        }
+        elsif (defined $c_status) {
+          $consensus{$c_status}++;
+        }
+      }
+    }
+  }
+  my @consensus = sort { uc $a cmp uc $b } keys %consensus;
+
+  # Read adjudicator annotations
+
+  my @adjudicators = get_user_list($madata, 'adj');
+  my %nadjs;
+  foreach my $u (@adjudicators) {
+    if (open ADJS, "$madata/adj.$u") {
+      while (<ADJS>) {
+        if (/^(\S+)\t(\d+)\t([^\t]*)\t([^\t]*)/) {
+          my ($rec, $time, $s, $ss) = ($1, $2, $3, $4);
+          my $n = $rstat{$s}->{$ss};
+          if (defined $n && $needs_adj{$rec}->{$time}) {
+            $nadjs{$u}->{$s}++;
+          }
+          else {
+            $nadjs{$u}->{'???'}++;
+          }
+        }
+      }
+      close ADJS;
+    }
+  }
+
+
+  print $q->header(-charset => 'UTF-8');
+  print $q->start_html('Annotation Summary');
+  print $q->h1('Annotation Summary');
+
+
+  print $q->h2('Reviewers');
+  print "<table>\n";
+  print $q->thead($q->TR($q->th('Name'),
+                         $q->th({-colspan => 2}, 'Annotated'),
+                         $q->th({-colspan => 2}, 'Remaining')));
+  print "<tbody>\n";
+  foreach my $u (@reviewers) {
+    my $name = $q->escapeHTML($u);
+    print $q->TR($q->td($name),
+                 $q->td($nanns{$u}),
+                 $q->td(sprintf '(%.0f%%)', 100 * $nanns{$u} / $total),
+                 $q->td($total - $nanns{$u}),
+                 $q->td(sprintf '(%.0f%%)', 100 - 100 * $nanns{$u} / $total));
+  }
+  print "</tbody></table>\n";
+
+
+  print $q->h2('Consensus of reviewers');
+  print "<table><tbody>\n";
+  my $rem = $total;
+  foreach my $c (@consensus) {
+    my $name = $q->escapeHTML($c);
+    my $count = $consensus{$c};
+
+    print $q->TR($q->td($name),
+                 $q->td($count),
+                 $q->td(sprintf '(%.0f%%)', 100 * $count / $total));
+
+    $rem -= $count;
+  }
+  print $q->TR($q->td('[no quorum]'),
+               $q->td($rem),
+               $q->td(sprintf '(%.0f%%)', 100 * $rem / $total));
+  print "</tbody></table>\n";
+
+
+  foreach my $u (@adjudicators) {
+    print $q->h2('Adjudicator ' . $q->escapeHTML("($u)"));
+    print "<table><tbody>\n";
+    my $tot = $consensus{'[disagree]'};
+    my $rem = $tot;
+    foreach my $c (sort keys %{$nadjs{$u}}) {
+      my $name = $q->escapeHTML($c);
+      my $count = $nadjs{$u}->{$c};
+
+      print $q->TR($q->td($name),
+                   $q->td($count),
+                   $q->td(sprintf '(%.0f%%)', 100 * $count / $tot));
+      $rem -= $count;
+    }
+    print $q->TR($q->td('[unreviewed]'),
+                 $q->td($rem),
+                 $q->td(sprintf '(%.0f%%)', 100 * $rem / $tot));
+    print "</tbody></table>\n";
+  }
+
+
+  print $q->end_html;
+}
+else {
+  print $q->header('text/plain', '400 Bad Request');
+  print "Unknown action '$action'\n";
+  exit 0;
+}

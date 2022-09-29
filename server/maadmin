@@ -1,0 +1,317 @@
+#!/usr/bin/perl -wT
+
+use strict;
+use CGI;
+use Encode;
+
+$ENV{PATH} = '/usr/local/bin:/usr/bin:/bin';
+
+my $q = CGI->new;
+
+my $ROSTERS  = '/data1/pnw/admin/rosters';
+my $PROJECTS = '/data1/pnw/html/works';
+my $USERS    = '/data1/pnw/html/users';
+
+my $user;
+my $project_name;
+my $project_dir;
+my $project_url;
+my $authorized = 0;
+
+my $self = $q->url(-relative => 1);
+
+my $action = $q->url_param('a') // '';
+
+################################################################
+
+sub check_admin {
+  my $prj = shift;
+  if (open ROSTER, '<', "$ROSTERS/$prj") {
+    while (<ROSTER>) {
+      if (/^(?:Owner:).*\s\Q$user\E\s/) {
+        close ROSTER;
+        return 1;
+      }
+    }
+    close ROSTER;
+  }
+  return 0;
+}
+
+sub get_project_title {
+  my $prjdir = shift;
+  if (open INDEX, '<:encoding(utf8)', "$prjdir/index.shtml") {
+    while (<INDEX>) {
+      if (/<!--#set var="TITLE" value="((?:[^[:cntrl:]\\"\$]++|\\[^[:cntrl:]])++)"-->/) {
+        my $t = $1;
+        $t =~ s/\\(.)/$1/g;
+        close INDEX;
+        return $t;
+      }
+    }
+    close INDEX;
+  }
+  return "[unknown title]";
+}
+
+sub print_header {
+  my $title="PhysioNetWorks ($user)";
+  if ($_[0]) { $title = $_[0]; }
+  print $q->header(-charset=>'utf-8');
+  print_file("/users/shared/doctype.html");
+  print "<title>$title</title>\n";
+  print '<script src="/users/shared/sorttable.js"></script>';
+  print_file("/users/shared/head0.cgi");
+  print_file("/users/shared/menu.cgi");
+  print_file("/users/shared/head2.cgi");
+  print "<h1>$title</h1><div style=\"margin: 0.5em 1em;\">";
+}
+
+sub print_file {
+  if (open(FILE, $_[0])) {
+    while (<FILE>) {
+      print $_;
+    }
+    close(FILE);
+  }
+}
+
+sub file_contents {
+  my $fname = shift;
+  my $text = '';
+  if (open FILE, '<:encoding(utf8)', $fname) {
+    while (<FILE>) {
+      $text .= $_;
+    }
+    close FILE;
+  }
+  return $text;
+}
+
+sub fix_records_list {
+  my $madata = shift;
+  my $username = shift;
+
+  my $annfile = "$madata/ann.$username";
+  my $recfile = "$madata/records";
+  my $userrecfile = "$madata/records.$username";
+
+  my %seen;
+  my %oldorder;
+  my @oldrecs;
+  my @newrecs;
+
+  if (open ANN, '<', $annfile) {
+    while (<ANN>) {
+      if (/^([-_\/A-Za-z0-9]+)\s/) {
+        $seen{$1} = 1;
+      }
+    }
+    close ANN;
+  }
+
+  if (open RECS, '<', $userrecfile) {
+    while (<RECS>) {
+      if (/^([-_\/A-Za-z0-9]+)\s/) {
+        $oldorder{$1} = $.;
+      }
+    }
+    close RECS;
+  }
+
+  open RRECS, '-|', "sort -R $recfile";
+  while (<RRECS>) {
+    if (/^([-_\/A-Za-z0-9]+)\s/) {
+      if (defined $seen{$1}) {
+        push @oldrecs, $_;
+      }
+      else {
+        push @newrecs, $_;
+      }
+    }
+  }
+  close RRECS;
+
+  @oldrecs = sort {
+    my ($r1) = ($a =~ /^(\S+)/);
+    my ($r2) = ($b =~ /^(\S+)/);
+    ($oldorder{$r1} // 0) <=> ($oldorder{$r2} // 0)
+  } @oldrecs;
+
+  open RECS, '>', $userrecfile or die "can't write $userrecfile: $!";
+  print RECS @oldrecs;
+  print RECS @newrecs;
+  close RECS;
+}
+
+
+################################################################
+
+## Check for a valid user name (email address) ##
+
+if ($q->remote_user() =~ /^(\w(?:\w|\.|\-)*\@(?:(?:\w|\-)+\.)+[a-zA-Z]{2,})$/) {
+  $user = $1;
+}
+else {
+  print $q->header('text/plain', '403 Forbidden');
+  exit 0;
+}
+
+## Check for a valid project name ##
+
+if (($q->url_param('project') // '') =~ /^([[:alnum:]]+)$/) {
+  ## Public project
+  $project_name = $1;
+  $project_dir = "$PROJECTS/$project_name";
+  $project_url = $q->url(-base => 1) . "/works/$project_name";
+  $self .= "?project=$project_name";
+  $authorized = check_admin($project_name);
+}
+elsif (($q->url_param('private_project') // '') =~ /^([[:alnum:]]+)$/) {
+  ## Private project
+  $project_name = $1;
+  $project_dir = "$USERS/$user/works/$project_name";
+  $project_url = $q->url(-base => 1) . "/users/$user/works/$project_name";
+  $self .= "?private_project=$project_name";
+  if (-e $project_dir) {
+    $authorized = 1;
+  }
+}
+else {
+  print $q->header('text/plain', '400 Bad Request');
+  print "No project name provided\n";
+  exit 0;
+}
+
+## Check if user is authorized to access this project
+
+if (!$authorized) {
+  print $q->header('text/plain', '403 Forbidden');
+  print "Not a member of this project\n";
+  exit 0;
+}
+
+################################################################
+
+my $madata = "$project_dir/files/.metaann";
+my $templates = "/data1/pnw/admin/ma-templates";
+
+my @sections = (
+  [ 'conf',    'General configuration',     'project.conf',
+    "These settings define the parameters for the events to be annotated, " .
+    "the possible user responses for each event, general display settings, " .
+    "and the URLs used for submitting annotations." ],
+  [ 'gtkui',   'User interface definition', 'options.ui',
+    "This is an XML document defining the GTK+ user interface that is " .
+    "shown to the user.  Use <a href=\"https://glade.gnome.org/\">Glade " .
+    "3.8</a> to edit this file." ],
+  [ 'dbcal',   'Signal calibration',        'dbcal',
+    "This is a list of signal display settings, in " .
+    "<a href=\"http://physionet.org/physiotools/wag/wfdbca-5.htm\">WFDB " .
+    "calibration format</a>, to be used for the project." ],
+  [ 'records', 'List of records',           'records',
+    "This is the list of records to be annotated.  Each line should " .
+    "consist of the name of a record, followed by a space, followed by the " .
+    "number of events to be annotated in that record.  Note that when you " .
+    "save the records list, a randomly shuffled version will also be " .
+    "generated for each user." ]
+);
+
+my $title = get_project_title($project_dir);
+
+binmode STDOUT, ':utf8';
+print_header("$title - Annotation Setup");
+
+foreach my $s (@sections) {
+  my ($sname, $heading, $filename, $description) = @$s;
+
+  print $q->h3({-id => $sname}, $heading);
+  print $q->p($description);
+
+  my $file = "$madata/$filename";
+  my $oldfile = "$file~";
+  my $newfile = "$file~new~";
+  my $template_file = "$templates/$filename";
+
+  my $text = $q->param($sname);
+  my $changed = 0;
+
+  if ($action eq $sname
+      && $q->request_method eq 'POST'
+      && defined $text
+      && length($text) < 100000) {
+
+    if (! -d $madata) {
+      mkdir $madata;
+    }
+
+    open FILE, '>:utf8',$newfile or die "can't write $newfile: $!";
+    print FILE $text;
+    close FILE or die "can't write $newfile: $!";
+
+    my $can_undo = rename $file, $oldfile;
+    rename $newfile, $file;
+    
+    if ($can_undo) {
+      print $q->start_form(-method => 'post',
+                           -action => "$self&a=undo-$sname#$sname");
+      print $q->p($q->b('Changes saved.'),
+                  $q->input({-type => 'submit', -value => 'Undo'}));
+      print $q->end_form;
+    }
+    else {
+      print $q->p($q->b('Changes saved.'));
+    }
+    $changed = 1;
+  }
+  elsif ($action eq "undo-$sname"
+         && $q->request_method eq 'POST'
+         && -f $file && -f $oldfile) {
+    rename $oldfile, $newfile;
+    rename $file, $oldfile;
+    rename $newfile, $file;
+
+    print $q->start_form(-method => 'post',
+                         -action => "$self&a=undo-$sname#$sname");
+    print $q->p($q->b('Reverted to previous version.'),
+                $q->input({-type => 'submit', -value => 'Undo'}));
+    print $q->end_form;
+    $changed = 1;
+  }
+
+  if ($changed && $sname eq 'records') {
+    if (opendir DIR, $madata) {
+      while ($_ = readdir DIR) {
+        if (/^records\.(.*[^~])$/s) {
+          fix_records_list($madata, $1);
+        }
+      }
+      closedir DIR;
+    }
+  }
+
+  if (-f $file) {
+    $text = file_contents($file);
+  }
+  else {
+    $text = file_contents($template_file);
+    if ($text ne '') {
+      print $q->p($q->b('The text below is a template.'),
+                  'Edit the configuration as needed for your project, then click Save.');
+    }
+  }
+
+  print $q->start_form(-method => 'post',
+                       -action => "$self&a=$sname#$sname",
+                       '-accept-charset' => 'UTF-8');
+  print $q->textarea(-name => $sname,
+                     -default => $text,
+                     -rows => 20,
+                     -columns => 100);
+  print $q->br;
+  print $q->input({-type => 'submit', -value => 'Save'});
+  print $q->end_form;
+}
+
+print $q->end_html;
+exit 0;
